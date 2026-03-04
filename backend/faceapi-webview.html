@@ -1,0 +1,331 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"
+    ></script>
+    <style>
+      body {
+        margin: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+      canvas {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <canvas id="resize"></canvas>
+    <script>
+      let modelsLoaded = false;
+      let idDescriptor = null;
+      let liveDescriptor = null;
+
+      const send = (payload) =>
+        window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+
+      // ── Model URL: always use the Express backend that served this page ──────
+      function getModelUrl() {
+        // window.location.origin = "http://192.168.x.x:3001"
+        // so models are at http://192.168.x.x:3001/face-models
+        return window.location.origin + "/face-models";
+      }
+
+      // ── Downscale large images before inference ───────────────────────────────
+      const resizeImage = (img, maxDim) => {
+        const canvas = document.getElementById("resize");
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas
+          .getContext("2d")
+          .drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas;
+      };
+
+      const loadImageFromBase64 = (base64) =>
+        new Promise((res, rej) => {
+          const img = new Image();
+          img.onload = () => res(img);
+          img.onerror = rej;
+          img.src = base64;
+        });
+
+      const tinyOpts = (size) =>
+        new faceapi.TinyFaceDetectorOptions({
+          inputSize: size || 160,
+          scoreThreshold: 0.3,
+        });
+
+      // ── Crop the detected face from the original full-res image ──────────────
+      const cropFaceToBase64 = (img, box, pad) => {
+        pad = pad || 30;
+        const canvas = document.getElementById("c");
+        const x = Math.max(0, box.x - pad);
+        const y = Math.max(0, box.y - pad);
+        const w = Math.min(box.width + pad * 2, img.width - x);
+        const h = Math.min(box.height + pad * 2, img.height - y);
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, x, y, w, h, 0, 0, w, h);
+        return canvas.toDataURL("image/jpeg", 0.92);
+      };
+
+      const euclidean = (a, b) => {
+        let sum = 0;
+        for (let i = 0; i < a.length; i++) {
+          const d = a[i] - b[i];
+          sum += d * d;
+        }
+        return Math.sqrt(sum);
+      };
+
+      // ── Load models from Express backend ─────────────────────────────────────
+      async function loadModels() {
+        try {
+          const MODEL_URL = getModelUrl();
+          send({ type: "debug", message: "Loading models from: " + MODEL_URL });
+          send({ type: "progress", value: 5 });
+
+          await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+          send({ type: "progress", value: 40 });
+
+          await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL);
+          send({ type: "progress", value: 75 });
+
+          await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+          send({ type: "progress", value: 100 });
+
+          modelsLoaded = true;
+          send({ type: "modelsReady" });
+          send({ type: "debug", message: "Models loaded successfully!" });
+        } catch (err) {
+          send({ type: "debug", message: "Model load error: " + err.message });
+          // Fallback to CDN
+          try {
+            send({ type: "progress", value: 0 });
+            const CDN =
+              "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
+            send({ type: "debug", message: "Falling back to CDN: " + CDN });
+
+            await faceapi.nets.tinyFaceDetector.loadFromUri(CDN);
+            send({ type: "progress", value: 40 });
+            await faceapi.nets.faceLandmark68TinyNet.loadFromUri(CDN);
+            send({ type: "progress", value: 75 });
+            await faceapi.nets.faceRecognitionNet.loadFromUri(CDN);
+            send({ type: "progress", value: 100 });
+
+            modelsLoaded = true;
+            send({ type: "modelsReady" });
+            send({ type: "debug", message: "CDN fallback succeeded!" });
+          } catch (cdnErr) {
+            send({
+              type: "error",
+              context: "models",
+              message: "Failed to load models: " + (cdnErr.message || cdnErr),
+            });
+          }
+        }
+      }
+
+      // ── Message handler ───────────────────────────────────────────────────────
+      window.addEventListener("message", async (event) => {
+        let msg;
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        if (msg.action === "loadModels") {
+          loadModels();
+          return;
+        }
+
+        if (!modelsLoaded) {
+          send({
+            type: "error",
+            context: msg.action,
+            message: "Models not loaded yet",
+          });
+          return;
+        }
+
+        // ── processIdFace ────────────────────────────────────────────────────────
+        if (msg.action === "processIdFace") {
+          try {
+            send({ type: "debug", message: "Processing ID face..." });
+            const img = await loadImageFromBase64(msg.base64);
+            send({
+              type: "debug",
+              message: "ID image loaded: " + img.width + "x" + img.height,
+            });
+
+            // Try multiple input sizes for better detection on ID photos
+            let allFaces = null;
+            const sizes = [320, 224, 416, 608];
+            for (const size of sizes) {
+              const src = resizeImage(img, 800);
+              allFaces = await faceapi
+                .detectAllFaces(
+                  src,
+                  new faceapi.TinyFaceDetectorOptions({
+                    inputSize: size,
+                    scoreThreshold: 0.2,
+                  }),
+                )
+                .withFaceLandmarks(true)
+                .withFaceDescriptors();
+
+              send({
+                type: "debug",
+                message:
+                  "Size " +
+                  size +
+                  " found " +
+                  (allFaces ? allFaces.length : 0) +
+                  " faces",
+              });
+              if (allFaces && allFaces.length > 0) break;
+            }
+
+            if (!allFaces || allFaces.length === 0) {
+              send({
+                type: "idFaceError",
+                message:
+                  "No face detected in ID image. Make sure the ID photo is clear and well-lit.",
+              });
+              return;
+            }
+
+            // Pick largest face (the ID photo)
+            const best = allFaces.sort(
+              (a, b) =>
+                b.detection.box.width * b.detection.box.height -
+                a.detection.box.width * a.detection.box.height,
+            )[0];
+
+            idDescriptor = Array.from(best.descriptor);
+
+            // Crop from the original full-res image
+            // Scale box back from resized canvas to original image coords
+            const src = resizeImage(img, 800);
+            const scaleX = img.width / src.width;
+            const scaleY = img.height / src.height;
+
+            const cropBase64 = cropFaceToBase64(img, {
+              x: best.detection.box.x * scaleX,
+              y: best.detection.box.y * scaleY,
+              width: best.detection.box.width * scaleX,
+              height: best.detection.box.height * scaleY,
+            });
+
+            send({
+              type: "idFaceDone",
+              descriptor: idDescriptor,
+              cropBase64,
+              confidence: best.detection.score,
+            });
+            send({
+              type: "debug",
+              message: "ID face done! score=" + best.detection.score.toFixed(3),
+            });
+          } catch (err) {
+            send({
+              type: "idFaceError",
+              message: err.message || "ID face processing failed",
+            });
+          }
+          return;
+        }
+
+        // ── processLiveFrame ──────────────────────────────────────────────────────
+        if (msg.action === "processLiveFrame") {
+          try {
+            const img = await loadImageFromBase64(msg.base64);
+            const src = resizeImage(img, 480);
+
+            const det = await faceapi
+              .detectSingleFace(src, tinyOpts(160))
+              .withFaceLandmarks(true)
+              .withFaceDescriptor();
+
+            if (!det) {
+              send({ type: "liveFrameNoFace" });
+              return;
+            }
+
+            liveDescriptor = Array.from(det.descriptor);
+            send({
+              type: "liveFrameFaceFound",
+              confidence: det.detection.score,
+            });
+          } catch {
+            send({ type: "liveFrameNoFace" });
+          }
+          return;
+        }
+
+        // ── processLiveFace (photo upload fallback) ───────────────────────────────
+        if (msg.action === "processLiveFace") {
+          try {
+            const img = await loadImageFromBase64(msg.base64);
+            const src = resizeImage(img, 640);
+
+            const det = await faceapi
+              .detectSingleFace(src, tinyOpts(224))
+              .withFaceLandmarks(true)
+              .withFaceDescriptor();
+
+            if (!det) {
+              send({
+                type: "liveFaceError",
+                message: "No face detected. Use a clear, front-facing photo.",
+              });
+              return;
+            }
+
+            liveDescriptor = Array.from(det.descriptor);
+            send({ type: "liveFaceDone", descriptor: liveDescriptor });
+          } catch (err) {
+            send({
+              type: "liveFaceError",
+              message: err.message || "Live face processing failed",
+            });
+          }
+          return;
+        }
+
+        // ── verify ────────────────────────────────────────────────────────────────
+        if (msg.action === "verify") {
+          if (!idDescriptor || !liveDescriptor) {
+            send({
+              type: "verifyError",
+              message: "Missing face data. Please redo the steps.",
+            });
+            return;
+          }
+          try {
+            const distance = euclidean(idDescriptor, liveDescriptor);
+            const isMatch = distance < 0.55;
+            const matchScore = Math.max(0, Math.min(1, 1 - distance));
+            send({ type: "verifyDone", isMatch, matchScore, distance });
+          } catch (err) {
+            send({
+              type: "verifyError",
+              message: err.message || "Verification failed",
+            });
+          }
+          return;
+        }
+      });
+
+      window.addEventListener("load", () => send({ type: "webviewReady" }));
+    </script>
+  </body>
+</html>

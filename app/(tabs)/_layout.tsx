@@ -1,71 +1,60 @@
-import React from 'react';
-import { SymbolView } from 'expo-symbols';
-import { Link, Tabs } from 'expo-router';
-import { Platform, Pressable } from 'react-native';
+import { Tabs } from "expo-router";
+import { Bell, ClipboardList, Home, User } from "lucide-react-native";
+import { StatusBar } from "expo-status-bar";
+import { View } from "react-native";
 
-import Colors from '@/constants/Colors';
-import { useColorScheme } from '@/components/useColorScheme';
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
-
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
-
+export default function TabsLayout() {
   return (
-    <Tabs
-      screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme].tint,
-        // Disable the static render of the header on web
-        // to prevent a hydration error in React Navigation v6.
-        headerShown: useClientOnlyValue(false, true),
-      }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Tab One',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{
-                ios: 'chevron.left.forwardslash.chevron.right',
-                android: 'code',
-                web: 'code',
-              }}
-              tintColor={color}
-              size={28}
-            />
-          ),
-          headerRight: () => (
-            <Link href="/modal" asChild>
-              <Pressable style={{ marginRight: 15 }}>
-                {({ pressed }) => (
-                  <SymbolView
-                    name={{ ios: 'info.circle', android: 'info', web: 'info' }}
-                    size={25}
-                    tintColor={Colors[colorScheme].text}
-                    style={{ opacity: pressed ? 0.5 : 1 }}
-                  />
-                )}
-              </Pressable>
-            </Link>
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="two"
-        options={{
-          title: 'Tab Two',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{
-                ios: 'chevron.left.forwardslash.chevron.right',
-                android: 'code',
-                web: 'code',
-              }}
-              tintColor={color}
-              size={28}
-            />
-          ),
-        }}
-      />
-    </Tabs>
+    <>
+      <StatusBar style="light" backgroundColor="#166534" />
+      <View className="flex-1 bg-green-900">
+        <Tabs
+          screenOptions={{
+            headerShown: false,
+            tabBarActiveTintColor: "#166534",
+            tabBarInactiveTintColor: "#9ca3af",
+            tabBarStyle: {
+              backgroundColor: "white",
+              borderTopWidth: 1,
+              borderTopColor: "#e5e7eb",
+              height: 60,
+              paddingBottom: 8,
+              paddingTop: 8,
+            },
+          }}
+        >
+          <Tabs.Screen
+            name="index"
+            options={{
+              title: "Home",
+              tabBarIcon: ({ color, size }) => <Home size={size} color={color} />,
+            }}
+          />
+          <Tabs.Screen
+            name="services"
+            options={{
+              title: "Services",
+              tabBarIcon: ({ color, size }) => (
+                <ClipboardList size={size} color={color} />
+              ),
+            }}
+          />
+          <Tabs.Screen
+            name="notifications"
+            options={{
+              title: "Alerts",
+              tabBarIcon: ({ color, size }) => <Bell size={size} color={color} />,
+            }}
+          />
+          <Tabs.Screen
+            name="profile"
+            options={{
+              title: "Profile",
+              tabBarIcon: ({ color, size }) => <User size={size} color={color} />,
+            }}
+          />
+        </Tabs>
+      </View>
+    </>
   );
 }

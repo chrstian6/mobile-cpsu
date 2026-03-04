@@ -1,57 +1,78 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
-import 'react-native-reanimated';
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { Stack, useRouter, useSegments } from "expo-router";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, StatusBar, View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import "../global.css";
 
-import { useColorScheme } from '@/components/useColorScheme';
-
-export {
-  // Catch any errors thrown by the Layout component.
-  ErrorBoundary,
-} from 'expo-router';
-
-export const unstable_settings = {
-  // Ensure that reloading on `/modal` keeps a back button present.
-  initialRouteName: '(tabs)',
-};
-
-// Prevent the splash screen from auto-hiding before asset loading is complete.
-SplashScreen.preventAutoHideAsync();
-
-export default function RootLayout() {
-  const [loaded, error] = useFonts({
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
-  });
-
-  // Expo Router uses Error Boundaries to catch errors in the navigation tree.
-  useEffect(() => {
-    if (error) throw error;
-  }, [error]);
+// ── Redirects unauthenticated users to login and vice versa ───────────────────
+function RouteGuard() {
+  const { user, isLoading } = useAuth();
+  const router = useRouter();
+  const segments = useSegments();
+  const [isNavigationReady, setIsNavigationReady] = useState(false);
 
   useEffect(() => {
-    if (loaded) {
-      SplashScreen.hideAsync();
+    // Small delay to ensure navigation is ready
+    const timer = setTimeout(() => {
+      setIsNavigationReady(true);
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!isNavigationReady || isLoading) return;
+
+    const currentSegment = (segments as string[])[0];
+    const onAuthScreen = !currentSegment || currentSegment === "index";
+    const onTabsScreen = currentSegment === "(tabs)";
+
+    console.log("Route guard:", {
+      user: !!user,
+      onAuthScreen,
+      onTabsScreen,
+      currentSegment,
+    });
+
+    if (!user && !onAuthScreen) {
+      // Not authenticated and not on auth screen -> go to auth
+      console.log("Redirecting to auth");
+      router.replace("/");
+    } else if (user && onAuthScreen) {
+      // Authenticated and on auth screen -> go to tabs
+      console.log("Redirecting to tabs");
+      router.replace("/(tabs)");
     }
-  }, [loaded]);
+  }, [user, isLoading, segments, isNavigationReady]);
 
-  if (!loaded) {
-    return null;
+  if (isLoading || !isNavigationReady) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: "#fff",
+        }}
+      >
+        <ActivityIndicator size="large" color="#14532d" />
+      </View>
+    );
   }
 
-  return <RootLayoutNav />;
+  return null;
 }
 
-function RootLayoutNav() {
-  const colorScheme = useColorScheme();
-
+// ── Root layout ───────────────────────────────────────────────────────────────
+export default function RootLayout() {
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
-      </Stack>
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <RouteGuard />
+        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+        <Stack screenOptions={{ headerShown: false }} />
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }
