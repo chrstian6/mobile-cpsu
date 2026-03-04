@@ -1,4 +1,5 @@
 // app/scan-id.tsx
+import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
@@ -10,6 +11,7 @@ import {
   IdCard,
   RefreshCw,
   ScanLine,
+  Send,
   ShieldCheck,
   Upload,
   XCircle,
@@ -31,13 +33,19 @@ import { WebView } from "react-native-webview";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const EXPRESS_API_BASE =
-  process.env.EXPO_PUBLIC_EXPRESS_URL || "http://192.168.1.37:3001";
+  process.env.EXPO_PUBLIC_EXPRESS_URL || "http://192.168.1.194:3001";
 
 const { width } = Dimensions.get("window");
 const CAMERA_HEIGHT = Math.round(width * 1.1);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type Step = "idle" | "processing-id" | "processing-face" | "verifying" | "done";
+type Step =
+  | "idle"
+  | "processing-id"
+  | "processing-face"
+  | "verifying"
+  | "submitting"
+  | "done";
 
 interface FrontData {
   card_id: string;
@@ -198,7 +206,7 @@ function LiveFaceScanner({
           });
         }
       } catch {
-        // camera busy, skip frame
+        // camera busy, skip
       }
     }, 600);
     return () => {
@@ -353,6 +361,7 @@ export default function ScanIdScreen() {
   const [idFaceCrop, setIdFaceCrop] = useState<string | null>(null);
   const [idFaceConfidence, setIdFaceConfidence] = useState<number | null>(null);
   const [idDescriptorReady, setIdDescriptorReady] = useState(false);
+  const idDescriptorRef = useRef<number[] | null>(null);
 
   // ID Back
   const [idBackUri, setIdBackUri] = useState<string | null>(null);
@@ -363,7 +372,7 @@ export default function ScanIdScreen() {
   const [liveDescriptorReady, setLiveDescriptorReady] = useState(false);
   const [showLiveScanner, setShowLiveScanner] = useState(false);
   const showLiveScannerRef = useRef(false);
-  const [liveScanConfidence, setLiveScanConfidence] = useState(0);
+  const liveDescriptorRef = useRef<number[] | null>(null);
 
   const _setShowLiveScanner = (val: boolean) => {
     showLiveScannerRef.current = val;
@@ -372,14 +381,14 @@ export default function ScanIdScreen() {
 
   const [result, setResult] = useState<VerificationResult | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [debugLog, setDebugLog] = useState<string[]>([]);
 
   const isProcessing =
     step === "processing-id" ||
     step === "processing-face" ||
-    step === "verifying";
+    step === "verifying" ||
+    step === "submitting";
 
-  // ── WebView communication ──────────────────────────────────────────────────
+  // ── WebView communication ─────────────────────────────────────────────────
   const sendToWebView = useCallback((payload: object) => {
     webviewRef.current?.injectJavaScript(
       `window.dispatchEvent(new MessageEvent('message', { data: ${JSON.stringify(
@@ -412,6 +421,7 @@ export default function ScanIdScreen() {
         case "idFaceDone":
           setIdFaceCrop(msg.cropBase64);
           setIdFaceConfidence(msg.confidence ?? null);
+          idDescriptorRef.current = msg.descriptor;
           setIdDescriptorReady(true);
           setStep("idle");
           break;
@@ -420,31 +430,20 @@ export default function ScanIdScreen() {
           setStep("idle");
           break;
 
+        // Frame scan — lightweight, just drives the UI indicator
         case "liveFrameFaceFound":
-          setLiveScanConfidence(msg.confidence);
           (LiveFaceScanner as any)._handleFrameResult?.(msg.confidence);
-          if (!showLiveScannerRef.current) {
-            setLiveDescriptorReady(true);
-            setStep("idle");
-          }
           break;
         case "liveFrameNoFace":
-          setLiveScanConfidence(0);
           (LiveFaceScanner as any)._handleFrameResult?.(0);
-          if (!showLiveScannerRef.current && step === "processing-face") {
-            setErrors((p) => ({
-              ...p,
-              live: "No face detected. Please try again.",
-            }));
-            setStep("idle");
-          }
           break;
 
-        case "liveFaceDone":
+        // Final high-quality capture — generates the real descriptor
+        case "liveFinalDone":
           setLiveDescriptorReady(true);
           setStep("idle");
           break;
-        case "liveFaceError":
+        case "liveFinalError":
           setErrors((p) => ({ ...p, live: msg.message }));
           setStep("idle");
           break;
@@ -464,7 +463,6 @@ export default function ScanIdScreen() {
 
         case "debug":
           console.log("[WebView]", msg.message);
-          setDebugLog((p) => [...p.slice(-4), msg.message]);
           break;
         case "error":
           setErrors((p) => ({ ...p, [msg.context ?? "general"]: msg.message }));
@@ -475,7 +473,7 @@ export default function ScanIdScreen() {
     [sendToWebView],
   );
 
-  // ── OCR ────────────────────────────────────────────────────────────────────
+  // ── OCR ──────────────────────────────────────────────────────────────────
   const runOcr = async (uri: string, side: "front" | "back") => {
     const filename = uri.split("/").pop() ?? "image.jpg";
     const ext = filename.split(".").pop()?.toLowerCase() ?? "jpg";
@@ -488,7 +486,7 @@ export default function ScanIdScreen() {
     const formData = new FormData();
     formData.append("image", { uri, name: filename, type: mime } as any);
     formData.append("side", side);
-    const token = await SecureStore.getItemAsync("jwt_access_token");
+    const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
     const res = await fetch(`${EXPRESS_API_BASE}/api/ocr`, {
       method: "POST",
       body: formData,
@@ -498,7 +496,7 @@ export default function ScanIdScreen() {
     return res.json();
   };
 
-  // ── Handle ID Front ────────────────────────────────────────────────────────
+  // ── Handle ID Front ───────────────────────────────────────────────────────
   const handleIdFront = async () => {
     const uri = await pickImage();
     if (!uri) return;
@@ -506,11 +504,11 @@ export default function ScanIdScreen() {
     setIdDescriptorReady(false);
     setIdFaceCrop(null);
     setIdFaceConfidence(null);
+    idDescriptorRef.current = null;
     setErrors((p) => ({ ...p, idFront: "" }));
     setStep("processing-id");
     try {
-      // Run OCR and face detection in parallel
-      const [ocrResult] = await Promise.all([runOcr(uri, "front")]);
+      const ocrResult = await runOcr(uri, "front");
       setIdFrontData({
         card_id: ocrResult.card_id || "Not detected",
         name: ocrResult.name || "Not detected",
@@ -518,10 +516,8 @@ export default function ScanIdScreen() {
         type_of_disability: ocrResult.type_of_disability || "Not detected",
         raw_text: ocrResult.raw_text || "",
       });
-      // Send to WebView for face detection + crop
       const base64 = await toBase64(uri);
       sendToWebView({ action: "processIdFace", base64 });
-      // Step stays as processing-id until WebView replies with idFaceDone
     } catch (err: any) {
       setErrors((p) => ({
         ...p,
@@ -531,7 +527,7 @@ export default function ScanIdScreen() {
     }
   };
 
-  // ── Handle ID Back ─────────────────────────────────────────────────────────
+  // ── Handle ID Back ────────────────────────────────────────────────────────
   const handleIdBack = async () => {
     const uri = await pickImage();
     if (!uri) return;
@@ -562,7 +558,7 @@ export default function ScanIdScreen() {
     }
   };
 
-  // ── Live face captured from camera ─────────────────────────────────────────
+  // ── Live face captured ────────────────────────────────────────────────────
   const handleLiveFaceCaptured = useCallback(
     async (uri: string, confidence: number) => {
       _setShowLiveScanner(false);
@@ -572,7 +568,8 @@ export default function ScanIdScreen() {
       setStep("processing-face");
       try {
         const base64 = await toBase64(uri);
-        sendToWebView({ action: "processLiveFrame", base64 });
+        // Use processLiveFinal — high quality descriptor for verification
+        sendToWebView({ action: "processLiveFinal", base64 });
       } catch (err: any) {
         setErrors((p) => ({
           ...p,
@@ -584,11 +581,7 @@ export default function ScanIdScreen() {
     [sendToWebView],
   );
 
-  useEffect(() => {
-    if (liveDescriptorReady) setStep("idle");
-  }, [liveDescriptorReady]);
-
-  // ── Verify ─────────────────────────────────────────────────────────────────
+  // ── Verify ────────────────────────────────────────────────────────────────
   const handleVerify = () => {
     if (!idDescriptorReady || !liveDescriptorReady) {
       Alert.alert("Missing Data", "Complete all 3 steps first.");
@@ -599,7 +592,103 @@ export default function ScanIdScreen() {
     sendToWebView({ action: "verify" });
   };
 
-  // ── Reset ──────────────────────────────────────────────────────────────────
+  // ── Submit card to backend ────────────────────────────────────────────────
+  const handleSubmit = async () => {
+    if (!result?.isMatch) {
+      Alert.alert("Not Verified", "Face match failed. Cannot submit.");
+      return;
+    }
+
+    setStep("submitting");
+    setErrors((p) => ({ ...p, submit: "" }));
+
+    try {
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+
+      // Strip raw_text — it contains newlines/special chars that can break JSON
+      const payload = {
+        // Front data
+        card_id: idFrontData?.card_id,
+        name: idFrontData?.name,
+        barangay: idFrontData?.barangay,
+        type_of_disability: idFrontData?.type_of_disability,
+        // Back data
+        address: idBackData?.address,
+        date_of_birth: idBackData?.date_of_birth,
+        sex: idBackData?.sex,
+        blood_type: idBackData?.blood_type,
+        date_issued: idBackData?.date_issued,
+        emergency_contact_name: idBackData?.emergency_contact_name,
+        emergency_contact_number: idBackData?.emergency_contact_number,
+        // Verification data
+        face_descriptors: idDescriptorRef.current,
+        match_score: result.matchScore,
+        distance: result.distance,
+        // Extracted data — omit raw_text to avoid JSON parse issues
+        extracted_data: {
+          front: {
+            card_id: idFrontData?.card_id,
+            name: idFrontData?.name,
+            barangay: idFrontData?.barangay,
+            type_of_disability: idFrontData?.type_of_disability,
+          },
+          back: {
+            address: idBackData?.address,
+            date_of_birth: idBackData?.date_of_birth,
+            sex: idBackData?.sex,
+            blood_type: idBackData?.blood_type,
+            date_issued: idBackData?.date_issued,
+            emergency_contact_name: idBackData?.emergency_contact_name,
+            emergency_contact_number: idBackData?.emergency_contact_number,
+          },
+        },
+      };
+
+      const res = await fetch(`${EXPRESS_API_BASE}/api/cards`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      // Read raw text first so we can log it if JSON parsing fails
+      const rawText = await res.text();
+      console.log("[submit] status:", res.status);
+      console.log("[submit] raw response:", rawText.slice(0, 500));
+
+      let data: any;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(
+          `Server returned non-JSON (status ${res.status}): ${rawText.slice(0, 200)}`,
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(data.message ?? data.error ?? "Submission failed");
+      }
+
+      // Navigate to success screen with card data
+      router.replace({
+        pathname: "/scan-id-success",
+        params: {
+          card: JSON.stringify(data.card),
+          matchScore: result.matchScore.toString(),
+        },
+      });
+    } catch (err: any) {
+      setErrors((p) => ({
+        ...p,
+        submit: err?.message ?? "Failed to submit card.",
+      }));
+      setStep("done"); // back to done so user can retry
+    }
+  };
+
+  // ── Reset ─────────────────────────────────────────────────────────────────
   const handleReset = () => {
     setIdFrontUri(null);
     setIdBackUri(null);
@@ -610,19 +699,19 @@ export default function ScanIdScreen() {
     setIdFaceConfidence(null);
     setIdDescriptorReady(false);
     setLiveDescriptorReady(false);
+    idDescriptorRef.current = null;
+    liveDescriptorRef.current = null;
     setResult(null);
     setErrors({});
     setStep("idle");
     _setShowLiveScanner(false);
-    setLiveScanConfidence(0);
-    setDebugLog([]);
   };
 
   const expiry = calculateExpiry(idBackData?.date_issued ?? "");
 
   return (
     <SafeAreaView className="flex-1 bg-gray-50">
-      {/* Hidden WebView — loads from Express backend so it works in Expo Go */}
+      {/* Hidden WebView */}
       <View
         style={{
           position: "absolute",
@@ -727,9 +816,7 @@ export default function ScanIdScreen() {
             </View>
           </View>
 
-          {/* ID image + face crop side by side — mirrors Next.js layout */}
           <View className="flex-row gap-3 mb-3">
-            {/* ID front thumbnail */}
             <Pressable
               onPress={handleIdFront}
               className="flex-1 h-32 rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 overflow-hidden"
@@ -754,7 +841,6 @@ export default function ScanIdScreen() {
               )}
             </Pressable>
 
-            {/* Extracted face crop — shown once detected */}
             <View className="w-24 items-center justify-center">
               {idFaceCrop ? (
                 <View className="items-center gap-1.5">
@@ -1032,11 +1118,12 @@ export default function ScanIdScreen() {
               {step === "processing-id" && "Scanning ID card…"}
               {step === "processing-face" && "Processing face…"}
               {step === "verifying" && "Comparing faces…"}
+              {step === "submitting" && "Submitting card to system…"}
             </Text>
           </View>
         )}
 
-        {/* Result */}
+        {/* Verification Result */}
         {result && (
           <View
             className={`rounded-2xl p-4 mb-3.5 border-2 ${
@@ -1074,7 +1161,6 @@ export default function ScanIdScreen() {
               </View>
             </View>
 
-            {/* Side-by-side face comparison */}
             {idFaceCrop && liveUri && (
               <View className="flex-row items-center justify-center gap-4 mt-2 bg-white/60 rounded-xl p-3">
                 <View className="items-center gap-1.5">
@@ -1110,36 +1196,72 @@ export default function ScanIdScreen() {
                 </View>
               </View>
             )}
+
+            {/* Submit error */}
+            {errors.submit ? (
+              <Text className="text-xs text-red-600 mt-2 text-center">
+                ⚠ {errors.submit}
+              </Text>
+            ) : null}
           </View>
         )}
 
         {/* Verify button */}
-        <Pressable
-          className={`flex-row items-center justify-center gap-2 bg-green-700 py-3.5 rounded-xl mb-3 ${
-            !idDescriptorReady ||
-            !liveDescriptorReady ||
-            isProcessing ||
-            !modelsLoaded
-              ? "opacity-50"
-              : ""
-          }`}
-          onPress={handleVerify}
-          disabled={
-            !idDescriptorReady ||
-            !liveDescriptorReady ||
-            isProcessing ||
-            !modelsLoaded
-          }
-        >
-          {step === "verifying" ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <ShieldCheck size={16} color="#fff" />
-          )}
-          <Text className="text-white font-bold text-base">
-            {step === "verifying" ? "Verifying…" : "Verify Face Match"}
-          </Text>
-        </Pressable>
+        {!result && (
+          <Pressable
+            className={`flex-row items-center justify-center gap-2 bg-green-700 py-3.5 rounded-xl mb-3 ${
+              !idDescriptorReady ||
+              !liveDescriptorReady ||
+              isProcessing ||
+              !modelsLoaded
+                ? "opacity-50"
+                : ""
+            }`}
+            onPress={handleVerify}
+            disabled={
+              !idDescriptorReady ||
+              !liveDescriptorReady ||
+              isProcessing ||
+              !modelsLoaded
+            }
+          >
+            {step === "verifying" ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <ShieldCheck size={16} color="#fff" />
+            )}
+            <Text className="text-white font-bold text-base">
+              {step === "verifying" ? "Verifying…" : "Verify Face Match"}
+            </Text>
+          </Pressable>
+        )}
+
+        {/* Submit button — only shown after successful verification */}
+        {result?.isMatch && step !== "submitting" && (
+          <Pressable
+            className="flex-row items-center justify-center gap-2 bg-green-700 py-3.5 rounded-xl mb-3"
+            onPress={handleSubmit}
+          >
+            <Send size={16} color="#fff" />
+            <Text className="text-white font-bold text-base">
+              Submit & Register Card
+            </Text>
+          </Pressable>
+        )}
+
+        {/* Re-verify button after failed match */}
+        {result && !result.isMatch && (
+          <Pressable
+            className="flex-row items-center justify-center gap-2 border-2 border-gray-300 py-3.5 rounded-xl mb-3"
+            onPress={() => {
+              setResult(null);
+              setStep("idle");
+            }}
+          >
+            <RefreshCw size={16} color="#6B7280" />
+            <Text className="text-gray-600 font-bold text-base">Try Again</Text>
+          </Pressable>
+        )}
       </ScrollView>
     </SafeAreaView>
   );

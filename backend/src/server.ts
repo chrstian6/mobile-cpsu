@@ -2,6 +2,7 @@ import cors from "cors";
 import express, { NextFunction, Request, Response } from "express";
 import path from "path";
 import authRoutes from "./routes/auth";
+import cardRoutes from "./routes/cards";
 import facapiWebviewRoutes from "./routes/faceapi-webview";
 import ocrRoutes from "./routes/ocr";
 
@@ -44,5 +45,7 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     error: process.env.NODE_ENV === "development" ? err.message : undefined,
   });
 });
+
+app.use("/api/cards", cardRoutes); //
 
 export default app;
