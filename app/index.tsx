@@ -1,13 +1,17 @@
+import { useAuth } from "@/context/AuthContext";
+import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import {
+  AlertCircle,
   ChevronRight,
   Eye,
   EyeOff,
   Phone,
   ShieldCheck,
 } from "lucide-react-native";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -28,6 +32,9 @@ const TAB_SHADOW = {
 };
 
 export default function AuthPage() {
+  const { login, register, isSubmitting, error, clearError, user, isLoading } =
+    useAuth();
+
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -36,30 +43,101 @@ export default function AuthPage() {
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  // If user is already authenticated, redirect to tabs
+  useEffect(() => {
+    if (!isLoading && user) {
+      router.replace("/(tabs)");
+    }
+  }, [user, isLoading]);
+
+  if (isLoading) {
+    return (
+      <View className="flex-1 justify-center items-center bg-white">
+        <ActivityIndicator size="large" color="#14532d" />
+      </View>
+    );
+  }
+
+  const resetForm = () => {
+    setEmail("");
+    setPassword("");
+    setConfirmPassword("");
+    setName("");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+    setLocalError(null);
+    clearError();
+  };
 
   const switchToLogin = () => {
     if (!isLogin) {
       setIsLogin(true);
-      setEmail("");
-      setPassword("");
-      setConfirmPassword("");
-      setName("");
-      setShowPassword(false);
-      setShowConfirmPassword(false);
+      resetForm();
     }
   };
 
   const switchToRegister = () => {
     if (isLogin) {
       setIsLogin(false);
-      setEmail("");
-      setPassword("");
-      setConfirmPassword("");
-      setName("");
-      setShowPassword(false);
-      setShowConfirmPassword(false);
+      resetForm();
     }
   };
+
+  const handleSubmit = async () => {
+    setLocalError(null);
+    clearError();
+
+    if (!email.trim() || !password) {
+      setLocalError("Email and password are required.");
+      return;
+    }
+
+    if (!isLogin) {
+      if (!name.trim()) {
+        setLocalError("Full name is required.");
+        return;
+      }
+      if (password.length < 8) {
+        setLocalError("Password must be at least 8 characters.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setLocalError("Passwords do not match.");
+        return;
+      }
+
+      const nameParts = name.trim().split(/\s+/);
+      const first_name = nameParts[0] ?? "";
+      const last_name =
+        nameParts.length > 1 ? nameParts[nameParts.length - 1] : first_name;
+      const middle_name =
+        nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : "";
+
+      try {
+        await register({
+          first_name,
+          middle_name,
+          last_name,
+          email: email.trim(),
+          password,
+        });
+        // Navigation happens in the store after successful registration
+      } catch {
+        // error is set in context
+      }
+    } else {
+      try {
+        await login({ email: email.trim(), password });
+        // Navigation happens in the store after successful login
+      } catch {
+        // error is set in context
+      }
+    }
+  };
+
+  const displayError = localError || error;
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={["bottom"]}>
@@ -129,7 +207,7 @@ export default function AuthPage() {
               </Text>
             </View>
 
-            {/* ── Tab switcher — NO shadow class, use style prop instead ── */}
+            {/* Tab switcher */}
             <View className="flex-row bg-gray-100 rounded-2xl p-1.5 mb-7">
               <Pressable
                 className={`flex-1 py-3.5 rounded-xl items-center ${isLogin ? "bg-white" : ""}`}
@@ -156,6 +234,16 @@ export default function AuthPage() {
                 </Text>
               </Pressable>
             </View>
+
+            {/* ── Error Banner ── */}
+            {displayError ? (
+              <View className="flex-row items-center gap-2 bg-red-50 border border-red-200 rounded-2xl px-4 py-3 mb-5">
+                <AlertCircle size={16} color="#dc2626" strokeWidth={2} />
+                <Text className="text-red-700 text-sm font-medium flex-1">
+                  {displayError}
+                </Text>
+              </View>
+            ) : null}
 
             {/* Fields */}
             <View className="gap-y-5">
@@ -241,6 +329,7 @@ export default function AuthPage() {
                     secureTextEntry={!showPassword}
                     autoCapitalize="none"
                     returnKeyType={isLogin ? "done" : "next"}
+                    onSubmitEditing={isLogin ? handleSubmit : undefined}
                     accessibilityLabel="Password"
                   />
                   <Pressable
@@ -283,6 +372,7 @@ export default function AuthPage() {
                       secureTextEntry={!showConfirmPassword}
                       autoCapitalize="none"
                       returnKeyType="done"
+                      onSubmitEditing={handleSubmit}
                       accessibilityLabel="Confirm password"
                     />
                     <Pressable
@@ -308,14 +398,30 @@ export default function AuthPage() {
 
             {/* CTA Button */}
             <Pressable
-              className="w-full bg-green-900 py-5 rounded-2xl mt-8 flex-row items-center justify-center gap-2 active:bg-green-800"
-              onPress={() => {}}
+              className={`w-full py-5 rounded-2xl mt-8 flex-row items-center justify-center gap-2 ${
+                isSubmitting
+                  ? "bg-green-700 opacity-80"
+                  : "bg-green-900 active:bg-green-800"
+              }`}
+              onPress={handleSubmit}
+              disabled={isSubmitting}
               accessibilityLabel={isLogin ? "Sign in" : "Create account"}
             >
-              <Text className="text-white text-base font-extrabold tracking-wide">
-                {isLogin ? "Sign In" : "Create Account"}
-              </Text>
-              <ChevronRight size={20} color="#ffffff" strokeWidth={2.5} />
+              {isSubmitting ? (
+                <>
+                  <ActivityIndicator size="small" color="#ffffff" />
+                  <Text className="text-white text-base font-extrabold tracking-wide ml-2">
+                    {isLogin ? "Signing In…" : "Creating Account…"}
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text className="text-white text-base font-extrabold tracking-wide">
+                    {isLogin ? "Sign In" : "Create Account"}
+                  </Text>
+                  <ChevronRight size={20} color="#ffffff" strokeWidth={2.5} />
+                </>
+              )}
             </Pressable>
 
             {/* Terms */}
