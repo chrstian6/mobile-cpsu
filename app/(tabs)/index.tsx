@@ -1,15 +1,10 @@
 // app/(tabs)/index.tsx
-// ─── CHANGES FROM ORIGINAL ───────────────────────────────────────────────────
-// 1. Added `useRouter` to imports from "expo-router"
-// 2. Added `const router = useRouter();` inside HomeScreen
-// 3. Added `onPress={() => router.push("/scan-id")}` to the Scan PWD ID button
-// Everything else is IDENTICAL to your original file.
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { useAuth } from "@/context/AuthContext";
-import { useRouter } from "expo-router"; // ← ADD THIS
+import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
+import { useRouter } from "expo-router";
+import * as SecureStore from "expo-secure-store";
 import { Bell, ChevronRight } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dimensions,
   FlatList,
@@ -21,6 +16,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+const EXPRESS_API_BASE =
+  process.env.EXPO_PUBLIC_EXPRESS_URL || "http://192.168.1.194:3001";
 const { width } = Dimensions.get("window");
 
 const ads = [
@@ -110,12 +107,45 @@ const services = [
 
 export default function HomeScreen() {
   const { user } = useAuth();
-  const router = useRouter(); // ← ADD THIS
+  const router = useRouter();
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
   const [currentAdIndex, setCurrentAdIndex] = useState(0);
   const bannerRef = useRef<FlatList>(null);
   const adRef = useRef<FlatList>(null);
 
+  // ── Card check state ──────────────────────────────────────────────────────
+  const [hasCard, setHasCard] = useState(false);
+  const [cardCheckDone, setCardCheckDone] = useState(false);
+
+  const checkCard = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+      if (!token) return;
+      const res = await fetch(`${EXPRESS_API_BASE}/api/cards/check`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setHasCard(data.hasCard || data.is_verified);
+    } catch (err) {
+      console.log("[card check error]", err);
+    } finally {
+      setCardCheckDone(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkCard();
+  }, [checkCard]);
+
+  useEffect(() => {
+    if (user?.is_verified) {
+      setHasCard(true);
+      setCardCheckDone(true);
+    }
+  }, [user?.is_verified]);
+
+  // ── Carousels ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
       const next = (currentBannerIndex + 1) % banners.length;
@@ -165,18 +195,18 @@ export default function HomeScreen() {
     </View>
   );
 
+  const showRegistrationNotice = cardCheckDone && !hasCard;
+
   return (
     <SafeAreaView className="flex-1 bg-white" edges={["bottom"]}>
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* ── Header ── */}
         <View className="px-6 pt-5 pb-5">
           <View className="flex-row justify-between items-center">
-            {/* Hamburger menu */}
             <Pressable className="justify-center gap-1.5 py-1">
               <View className="w-6 h-0.5 bg-gray-800 rounded-full" />
               <View className="w-4 h-0.5 bg-gray-800 rounded-full" />
             </Pressable>
-            {/* Bell */}
             <Pressable className="relative">
               <View className="w-10 h-10 items-center justify-center">
                 <Bell size={17} color="#374151" />
@@ -185,8 +215,8 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          {/* Verification notice */}
-          {!user?.is_verified && (
+          {/* ── Registration notice ── */}
+          {showRegistrationNotice && (
             <View className="mt-5 bg-gray-50 rounded-2xl p-4">
               <Text className="text-gray-800 text-[13px] font-semibold mb-1">
                 Complete your registration
@@ -196,7 +226,11 @@ export default function HomeScreen() {
                 record.
               </Text>
               <View className="flex-row gap-2">
-                <Pressable className="flex-1 bg-green-800 rounded-xl py-2.5 items-center">
+                {/* ── Apply Now → /apply ── */}
+                <Pressable
+                  onPress={() => router.push("/apply")}
+                  className="flex-1 bg-green-800 rounded-xl py-2.5 items-center"
+                >
                   <Text className="text-white text-[13px] font-semibold">
                     Apply Now
                   </Text>
@@ -204,8 +238,6 @@ export default function HomeScreen() {
                     New applicant
                   </Text>
                 </Pressable>
-
-                {/* ── ONLY CHANGE: added onPress ── */}
                 <Pressable
                   onPress={() => router.push("/scan-id")}
                   className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 items-center"
@@ -217,19 +249,25 @@ export default function HomeScreen() {
                     Already have one?
                   </Text>
                 </Pressable>
+              </View>
+            </View>
+          )}
 
-                {/* Add this new button */}
-                <Pressable
-                  onPress={() => router.push("/face-verification-web")}
-                  className="flex-1 bg-purple-600 border border-purple-200 rounded-xl py-2.5 items-center mt-2"
-                >
-                  <Text className="text-white text-[13px] font-semibold">
-                    Face Verify (Web)
+          {/* ── Verified badge ── */}
+          {cardCheckDone && hasCard && (
+            <View className="mt-5 bg-green-50 rounded-2xl p-4 border border-green-100">
+              <View className="flex-row items-center gap-2">
+                <View className="w-8 h-8 rounded-full bg-green-100 items-center justify-center">
+                  <Text className="text-green-700 text-base">✓</Text>
+                </View>
+                <View>
+                  <Text className="text-green-800 text-[13px] font-bold">
+                    PWD ID Verified
                   </Text>
-                  <Text className="text-purple-200 text-[10px] mt-0.5">
-                    Use web ML
+                  <Text className="text-green-600 text-[11px] mt-0.5">
+                    Your identity has been verified successfully.
                   </Text>
-                </Pressable>
+                </View>
               </View>
             </View>
           )}
@@ -258,9 +296,7 @@ export default function HomeScreen() {
             {ads.map((_, i) => (
               <View
                 key={i}
-                className={`h-1 rounded-full ${
-                  i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"
-                }`}
+                className={`h-1 rounded-full ${i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"}`}
               />
             ))}
           </View>
@@ -292,11 +328,7 @@ export default function HomeScreen() {
             {banners.map((_, i) => (
               <View
                 key={i}
-                className={`h-1 rounded-full ${
-                  i === currentBannerIndex
-                    ? "w-5 bg-green-800"
-                    : "w-1 bg-gray-200"
-                }`}
+                className={`h-1 rounded-full ${i === currentBannerIndex ? "w-5 bg-green-800" : "w-1 bg-gray-200"}`}
               />
             ))}
           </View>
@@ -342,16 +374,11 @@ export default function HomeScreen() {
               <ChevronRight size={13} color="#166534" />
             </Pressable>
           </View>
-
           <View className="rounded-2xl border border-gray-100 overflow-hidden">
             {recentActivities.map((activity, index) => (
               <View
                 key={activity.id}
-                className={`flex-row items-center px-4 py-3.5 bg-white ${
-                  index !== recentActivities.length - 1
-                    ? "border-b border-gray-50"
-                    : ""
-                }`}
+                className={`flex-row items-center px-4 py-3.5 bg-white ${index !== recentActivities.length - 1 ? "border-b border-gray-50" : ""}`}
               >
                 <View className="w-0.5 h-8 bg-gray-200 rounded-full mr-4" />
                 <View className="flex-1">
@@ -378,11 +405,7 @@ export default function HomeScreen() {
           {announcements.map((item, index) => (
             <Pressable
               key={item.id}
-              className={`bg-white py-5 ${
-                index !== announcements.length - 1
-                  ? "border-b border-gray-100"
-                  : ""
-              }`}
+              className={`bg-white py-5 ${index !== announcements.length - 1 ? "border-b border-gray-100" : ""}`}
             >
               <View className="flex-row justify-between items-start mb-1.5">
                 <Text className="text-gray-900 text-[14px] font-bold flex-1 mr-4">
