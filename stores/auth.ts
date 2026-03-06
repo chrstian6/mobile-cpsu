@@ -10,11 +10,9 @@ import {
   LoginPayload,
   RegisterPayload,
 } from "@/types/auth";
-import axios from "axios";
-import { router } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, AppStateStatus } from "react-native";
+import { Alert, AppState, AppStateStatus } from "react-native";
 
 export function useAuthStore(): AuthContextValue {
   const userRef = useRef<AuthUser | null>(null);
@@ -24,110 +22,125 @@ export function useAuthStore(): AuthContextValue {
   const [error, setError] = useState<string | null>(null);
   const appState = useRef(AppState.currentState);
   const initialLoadDone = useRef(false);
+  const isLoggingOut = useRef(false);
+  const isInitializing = useRef(true);
 
   const setUser = (u: AuthUser | null) => {
+    console.log("Setting user:", u ? u.email : null);
     userRef.current = u;
     _setUser(u);
   };
 
-  // Function to validate and refresh token if needed
   const validateAndRefreshToken = useCallback(async (): Promise<boolean> => {
+    // Don't validate if we're in the process of logging out
+    if (isLoggingOut.current) {
+      console.log("Skipping validation during logout");
+      return false;
+    }
+
+    console.log("Validating token...");
     try {
       const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
       const refreshToken = await SecureStore.getItemAsync(
         JWT_REFRESH_TOKEN_KEY,
       );
 
-      // If no tokens at all, user is not authenticated
+      console.log("Token check:", {
+        hasToken: !!token,
+        hasRefreshToken: !!refreshToken,
+      });
+
       if (!token || !refreshToken) {
+        console.log("No tokens found");
         return false;
       }
 
-      // Try to get user data with current token
       try {
+        console.log("Making /auth/me request with token");
         const res = await api.get("/auth/me");
+        console.log("/auth/me response:", res.data);
+
         if (res.data.user) {
+          console.log("User data received:", res.data.user.email);
           setUser(res.data.user);
           return true;
         }
+        console.log("No user data in response");
         return false;
-      } catch (error: any) {
-        // If token is expired (401), try to refresh
-        if (error.response?.status === 401) {
-          try {
-            const { data } = await axios.post(`${BASE_URL}/auth/refresh`, {
-              refresh_token: refreshToken,
-            });
-
-            if (data.access_token) {
-              // Store new tokens
-              await SecureStore.setItemAsync(
-                JWT_ACCESS_TOKEN_KEY,
-                data.access_token,
-              );
-              if (data.refresh_token) {
-                await SecureStore.setItemAsync(
-                  JWT_REFRESH_TOKEN_KEY,
-                  data.refresh_token,
-                );
-              }
-
-              // Get user data with new token
-              const userRes = await api.get("/auth/me");
-              if (userRes.data.user) {
-                setUser(userRes.data.user);
-                return true;
-              }
-            }
-          } catch (refreshError) {
-            console.log("Token refresh failed:", refreshError);
-            // If refresh fails, clear tokens
-            await SecureStore.deleteItemAsync(JWT_ACCESS_TOKEN_KEY);
-            await SecureStore.deleteItemAsync(JWT_REFRESH_TOKEN_KEY);
-          }
+      } catch (err: any) {
+        console.log("Failed to get user data:", err.message);
+        if (err.response) {
+          console.log(
+            "Error response:",
+            err.response.status,
+            err.response.data,
+          );
         }
         return false;
       }
-    } catch (error) {
-      console.error("Error validating token:", error);
+    } catch (err) {
+      console.error("Error validating token:", err);
       return false;
     }
   }, []);
 
-  // Load user on mount
   useEffect(() => {
     const initializeAuth = async () => {
-      if (initialLoadDone.current) return;
-
+      if (initialLoadDone.current) {
+        console.log("Auth already initialized");
+        return;
+      }
+      console.log("Initializing auth...");
       setIsLoading(true);
+      isInitializing.current = true;
       try {
         const isValid = await validateAndRefreshToken();
+        console.log("Token validation result:", isValid);
         if (!isValid) {
+          console.log("No valid token, setting user to null");
           setUser(null);
         }
-      } catch (error) {
-        console.error("Auth initialization error:", error);
+      } catch (err) {
+        console.error("Auth initialization error:", err);
         setUser(null);
       } finally {
+        console.log("Auth initialization complete");
         setIsLoading(false);
         initialLoadDone.current = true;
+        isInitializing.current = false;
       }
     };
 
     initializeAuth();
 
-    // Handle app state changes (background/foreground)
     const subscription = AppState.addEventListener(
       "change",
       async (nextAppState: AppStateStatus) => {
+        console.log("App state changed:", {
+          from: appState.current,
+          to: nextAppState,
+        });
+
+        // Skip validation during initialization
+        if (isInitializing.current) {
+          console.log("Skipping validation during initialization");
+          appState.current = nextAppState;
+          return;
+        }
+
+        // Only validate when coming from background to active
         if (
           appState.current.match(/inactive|background/) &&
           nextAppState === "active"
         ) {
-          // App has come to the foreground, validate session silently
+          console.log("App came to foreground, revalidating token");
           const isValid = await validateAndRefreshToken();
-          if (!isValid) {
-            setUser(null);
+          if (!isValid && userRef.current) {
+            console.log(
+              "Token invalid after app resume, but user exists - not logging out automatically",
+            );
+            // Don't automatically set user to null here
+            // Let the token refresh mechanism handle it
           }
         }
         appState.current = nextAppState;
@@ -140,16 +153,20 @@ export function useAuthStore(): AuthContextValue {
   }, [validateAndRefreshToken]);
 
   const login = useCallback(async (payload: LoginPayload) => {
+    console.log("Login attempt for:", payload.email);
     setIsSubmitting(true);
     setError(null);
+    isLoggingOut.current = false;
     try {
       const res = await api.post("/auth/login", payload);
+      console.log("Login response:", res.data);
 
       if (!res.data.access_token || !res.data.refresh_token || !res.data.user) {
+        console.error("Invalid login response structure");
         throw new Error("Invalid response from server");
       }
 
-      // Store tokens securely
+      console.log("Saving tokens to SecureStore");
       await SecureStore.setItemAsync(
         JWT_ACCESS_TOKEN_KEY,
         res.data.access_token,
@@ -158,15 +175,11 @@ export function useAuthStore(): AuthContextValue {
         JWT_REFRESH_TOKEN_KEY,
         res.data.refresh_token,
       );
-
+      console.log("Tokens saved, setting user");
       setUser(res.data.user);
-
-      // Navigate to tabs after successful login
-      // Use setTimeout to ensure state is updated
-      setTimeout(() => {
-        router.replace("/(tabs)");
-      }, 100);
+      console.log("Login successful for:", res.data.user.email);
     } catch (err: any) {
+      console.error("Login error:", err);
       const msg =
         err.response?.data?.message ||
         err.response?.data?.error ||
@@ -179,16 +192,20 @@ export function useAuthStore(): AuthContextValue {
   }, []);
 
   const register = useCallback(async (payload: RegisterPayload) => {
+    console.log("Register attempt for:", payload.email);
     setIsSubmitting(true);
     setError(null);
+    isLoggingOut.current = false;
     try {
       const res = await api.post("/auth/register", payload);
+      console.log("Register response:", res.data);
 
       if (!res.data.access_token || !res.data.refresh_token || !res.data.user) {
+        console.error("Invalid register response structure");
         throw new Error("Invalid response from server");
       }
 
-      // Store tokens securely
+      console.log("Saving tokens to SecureStore");
       await SecureStore.setItemAsync(
         JWT_ACCESS_TOKEN_KEY,
         res.data.access_token,
@@ -197,14 +214,11 @@ export function useAuthStore(): AuthContextValue {
         JWT_REFRESH_TOKEN_KEY,
         res.data.refresh_token,
       );
-
+      console.log("Tokens saved, setting user");
       setUser(res.data.user);
-
-      // Navigate to tabs after successful registration
-      setTimeout(() => {
-        router.replace("/(tabs)");
-      }, 100);
+      console.log("Registration successful for:", res.data.user.email);
     } catch (err: any) {
+      console.error("Registration error:", err);
       const msg =
         err.response?.data?.message ||
         err.response?.data?.error ||
@@ -216,19 +230,69 @@ export function useAuthStore(): AuthContextValue {
     }
   }, []);
 
-  const logout = useCallback(async () => {
+  const performLogout = async () => {
+    console.log("Performing logout");
+    isLoggingOut.current = true;
     try {
-      // Attempt to notify server (optional)
-      await api.post("/auth/logout").catch(() => {});
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+      if (token) {
+        console.log("Notifying server about logout");
+        fetch(`${BASE_URL}/auth/logout`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({}),
+        })
+          .then(() => console.log("Server logout successful"))
+          .catch(() => {
+            console.log("Server logout failed, continuing with local logout");
+          });
+      }
+    } catch (err) {
+      console.log("Logout request error:", err);
     } finally {
-      // Clear tokens regardless of server response
+      console.log("Clearing tokens");
       await SecureStore.deleteItemAsync(JWT_ACCESS_TOKEN_KEY);
       await SecureStore.deleteItemAsync(JWT_REFRESH_TOKEN_KEY);
-      setUser(null);
+      delete api.defaults.headers.common.Authorization;
 
-      // Navigate to auth page
-      router.replace("/");
+      console.log("Setting user to null");
+      setUser(null);
+      setIsSubmitting(false);
+
+      // Reset logout flag after a delay
+      setTimeout(() => {
+        isLoggingOut.current = false;
+      }, 500);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      console.log("Logout complete");
     }
+  };
+
+  const logout = useCallback(async () => {
+    console.log("LOGOUT FUNCTION CALLED");
+    return new Promise<void>((resolve) => {
+      Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+        {
+          text: "Cancel",
+          style: "cancel",
+          onPress: () => resolve(),
+        },
+        {
+          text: "Sign Out",
+          style: "destructive",
+          onPress: async () => {
+            console.log("User confirmed logout in alert");
+            setIsSubmitting(true);
+            await performLogout();
+            resolve();
+          },
+        },
+      ]);
+    });
   }, []);
 
   const clearError = useCallback(() => setError(null), []);

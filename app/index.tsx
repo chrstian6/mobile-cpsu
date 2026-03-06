@@ -1,3 +1,4 @@
+// app/index.tsx
 import { useAuth } from "@/context/AuthContext";
 import { router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -9,7 +10,7 @@ import {
   Phone,
   ShieldCheck,
 } from "lucide-react-native";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -44,13 +45,31 @@ export default function AuthPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const hasRedirected = useRef(false);
 
-  // If user is already authenticated, redirect to tabs
+  // If user is already authenticated, redirect to tabs - but only once
   useEffect(() => {
-    if (!isLoading && user) {
-      router.replace("/(tabs)");
+    if (!isLoading && user && !hasRedirected.current) {
+      console.log("User authenticated, redirecting to tabs");
+      hasRedirected.current = true;
+
+      // Use replace with a slight delay to ensure navigation works
+      setTimeout(() => {
+        router.replace("/(tabs)");
+      }, 100);
+    }
+
+    // Reset redirect flag if user becomes null
+    if (!user) {
+      hasRedirected.current = false;
     }
   }, [user, isLoading]);
+
+  // Clear any stale errors when switching modes
+  useEffect(() => {
+    clearError();
+    setLocalError(null);
+  }, [isLogin]);
 
   if (isLoading) {
     return (
@@ -123,16 +142,16 @@ export default function AuthPage() {
           email: email.trim(),
           password,
         });
-        // Navigation happens in the store after successful registration
-      } catch {
-        // error is set in context
+        // Don't reset redirect flag here - let the useEffect handle it
+      } catch (err) {
+        console.log("Registration error:", err);
       }
     } else {
       try {
         await login({ email: email.trim(), password });
-        // Navigation happens in the store after successful login
-      } catch {
-        // error is set in context
+        // Don't reset redirect flag here - let the useEffect handle it
+      } catch (err) {
+        console.log("Login error:", err);
       }
     }
   };

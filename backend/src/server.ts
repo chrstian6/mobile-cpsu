@@ -14,6 +14,7 @@ import authRoutes from "./routes/auth";
 import cardRoutes from "./routes/cards";
 import facapiWebviewRoutes from "./routes/faceapi-webview";
 import ocrRoutes from "./routes/ocr";
+import testRouter from "./routes/test";
 
 // ── Validate required env vars ────────────────────────────────────────────────
 const REQUIRED_ENV = ["JWT_SECRET", "JWT_REFRESH_SECRET", "MONGODB_URI"];
@@ -54,6 +55,7 @@ app.use("/api/cards", cardRoutes);
 app.use("/api/ocr", ocrRoutes);
 app.use("/api/applications", applicationRoutes); // ← NEW
 app.use("/faceapi-webview", facapiWebviewRoutes);
+app.use("/api/test", testRouter);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get("/", (_req: Request, res: Response) => {

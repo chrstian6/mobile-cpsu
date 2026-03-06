@@ -33,6 +33,17 @@ const parseDate = (val: string | undefined): Date | null => {
   return isNaN(d.getTime()) ? null : d;
 };
 
+// Simple sex mapper
+const mapSex = (sex: string | undefined): string => {
+  if (!sex || sex === "Not detected") return "Not detected";
+
+  const upperSex = sex.toUpperCase().trim();
+  if (upperSex === "M") return "Male";
+  if (upperSex === "F") return "Female";
+  if (sex === "Male" || sex === "Female" || sex === "Other") return sex;
+  return sex;
+};
+
 // ── POST /api/cards ───────────────────────────────────────────────────────────
 router.post(
   "/",
@@ -56,6 +67,10 @@ router.post(
       }
       const userId: string = userDoc.user_id || mongoId;
 
+      console.log("=".repeat(50));
+      console.log("[cards] Processing card submission for user:", userId);
+      console.log("=".repeat(50));
+
       const {
         card_id,
         name,
@@ -77,11 +92,19 @@ router.post(
       let extracted_data: any = null;
       try {
         face_descriptors = JSON.parse(req.body.face_descriptors || "[]");
+        console.log(
+          "[cards] Parsed face_descriptors length:",
+          face_descriptors.length,
+        );
       } catch {
         face_descriptors = [];
       }
       try {
         extracted_data = JSON.parse(req.body.extracted_data || "null");
+        console.log(
+          "[cards] Parsed extracted_data:",
+          extracted_data ? "yes" : "no",
+        );
       } catch {
         extracted_data = null;
       }
@@ -116,67 +139,183 @@ router.post(
       const files = req.files as
         | Record<string, Express.Multer.File[]>
         | undefined;
+
       const sanitizedCardId = card_id.replace(/[^a-zA-Z0-9\-]/g, "_");
       const sanitizedUserId = userId.replace(/[^a-zA-Z0-9\-]/g, "_");
 
+      console.log("\n[cards] ========== IMAGE UPLOAD DEBUG ==========");
       console.log("[cards] Content-Type:", req.headers["content-type"]);
-      console.log("[cards] Multipart files:", {
-        id_front: files?.id_front?.[0]
-          ? `${files.id_front[0].size} bytes`
-          : "NOT received",
-        id_back: files?.id_back?.[0]
-          ? `${files.id_back[0].size} bytes`
-          : "NOT received",
-      });
+      console.log(
+        "[cards] Files received:",
+        files ? Object.keys(files) : "none",
+      );
+      console.log(
+        "[cards] Body fields present:",
+        Object.keys(req.body).filter((k) => !k.includes("base64")),
+      );
+
+      // Debug front image
+      console.log("\n[cards] 📸 FRONT IMAGE DETAILS:");
+      if (files?.id_front?.[0]) {
+        const f = files.id_front[0];
+        console.log("  ✅ From multipart: YES");
+        console.log("  - Size:", f.size, "bytes");
+        console.log("  - Mimetype:", f.mimetype);
+        console.log("  - Originalname:", f.originalname);
+        console.log("  - Buffer exists:", !!f.buffer);
+        console.log("  - Buffer length:", f.buffer?.length || 0);
+      } else {
+        console.log("  ❌ From multipart: NO");
+      }
+
+      if (req.body.id_front_base64) {
+        console.log("  ✅ From base64: YES");
+        console.log("  - Base64 length:", req.body.id_front_base64.length);
+        console.log(
+          "  - Base64 prefix:",
+          req.body.id_front_base64.substring(0, 50) + "...",
+        );
+
+        // Validate base64 format
+        const hasDataUri = req.body.id_front_base64.startsWith("data:image");
+        console.log("  - Has data URI prefix:", hasDataUri);
+      } else {
+        console.log("  ❌ From base64: NO");
+      }
+
+      // Debug back image
+      console.log("\n[cards] 📸 BACK IMAGE DETAILS:");
+      if (files?.id_back?.[0]) {
+        const f = files.id_back[0];
+        console.log("  ✅ From multipart: YES");
+        console.log("  - Size:", f.size, "bytes");
+        console.log("  - Mimetype:", f.mimetype);
+        console.log("  - Originalname:", f.originalname);
+        console.log("  - Buffer exists:", !!f.buffer);
+        console.log("  - Buffer length:", f.buffer?.length || 0);
+      } else {
+        console.log("  ❌ From multipart: NO");
+      }
+
+      if (req.body.id_back_base64) {
+        console.log("  ✅ From base64: YES");
+        console.log("  - Base64 length:", req.body.id_back_base64.length);
+
+        const hasDataUri = req.body.id_back_base64.startsWith("data:image");
+        console.log("  - Has data URI prefix:", hasDataUri);
+      } else {
+        console.log("  ❌ From base64: NO");
+      }
 
       let idFrontUrl: string | null = null;
       let idBackUrl: string | null = null;
 
       // Upload front image
+      const frontPath = `${sanitizedUserId}/${sanitizedCardId}/id_front.jpg`;
+      console.log("\n[cards] 📤 Uploading front image to:", frontPath);
+
       if (files?.id_front?.[0] && files.id_front[0].size > 0) {
         const f = files.id_front[0];
-        const ext = f.mimetype === "image/png" ? "png" : "jpg";
+        console.log("[cards] Attempting multipart upload for front image...");
+        console.log("[cards] File size for upload:", f.size, "bytes");
+
         idFrontUrl = await uploadBufferToSupabase(
           f.buffer,
           f.mimetype,
-          `${sanitizedUserId}/${sanitizedCardId}/id_front.${ext}`,
+          frontPath,
+        );
+
+        console.log(
+          "[cards] Multipart upload result - front URL:",
+          idFrontUrl || "FAILED",
         );
       } else if (req.body.id_front_base64) {
-        console.log("[cards] Using base64 fallback for id_front");
+        console.log("[cards] Attempting base64 upload for front image...");
+        console.log(
+          "[cards] Base64 length for upload:",
+          req.body.id_front_base64.length,
+        );
+
         idFrontUrl = await uploadBase64ToSupabase(
           req.body.id_front_base64,
-          `${sanitizedUserId}/${sanitizedCardId}/id_front.jpg`,
+          frontPath,
+        );
+
+        console.log(
+          "[cards] Base64 upload result - front URL:",
+          idFrontUrl || "FAILED",
+        );
+      } else {
+        console.warn(
+          "[cards] ⚠️ No front image received at all - skipping upload",
         );
       }
 
       // Upload back image
+      const backPath = `${sanitizedUserId}/${sanitizedCardId}/id_back.jpg`;
+      console.log("\n[cards] 📤 Uploading back image to:", backPath);
+
       if (files?.id_back?.[0] && files.id_back[0].size > 0) {
         const f = files.id_back[0];
-        const ext = f.mimetype === "image/png" ? "png" : "jpg";
+        console.log("[cards] Attempting multipart upload for back image...");
+        console.log("[cards] File size for upload:", f.size, "bytes");
+
         idBackUrl = await uploadBufferToSupabase(
           f.buffer,
           f.mimetype,
-          `${sanitizedUserId}/${sanitizedCardId}/id_back.${ext}`,
+          backPath,
+        );
+
+        console.log(
+          "[cards] Multipart upload result - back URL:",
+          idBackUrl || "FAILED",
         );
       } else if (req.body.id_back_base64) {
-        console.log("[cards] Using base64 fallback for id_back");
+        console.log("[cards] Attempting base64 upload for back image...");
+        console.log(
+          "[cards] Base64 length for upload:",
+          req.body.id_back_base64.length,
+        );
+
         idBackUrl = await uploadBase64ToSupabase(
           req.body.id_back_base64,
-          `${sanitizedUserId}/${sanitizedCardId}/id_back.jpg`,
+          backPath,
+        );
+
+        console.log(
+          "[cards] Base64 upload result - back URL:",
+          idBackUrl || "FAILED",
+        );
+      } else {
+        console.warn(
+          "[cards] ⚠️ No back image received at all - skipping upload",
         );
       }
 
-      // ── Save card with raw values (no mapping) ─────────────────────────────
+      console.log("\n[cards] ========== UPLOAD SUMMARY ==========");
+      console.log(
+        "[cards] Front upload:",
+        idFrontUrl ? "✅ SUCCESS" : "❌ FAILED",
+      );
+      console.log(
+        "[cards] Back upload:",
+        idBackUrl ? "✅ SUCCESS" : "❌ FAILED",
+      );
+      if (idFrontUrl) console.log("[cards] Front URL:", idFrontUrl);
+      if (idBackUrl) console.log("[cards] Back URL:", idBackUrl);
+      console.log("[cards] ====================================\n");
+
+      // ── Save card with raw values ─────────────────────────────────────────────
       const card = new Card({
         card_id,
         user_id: userId,
         name,
         barangay: barangay || "Not detected",
-        type_of_disability: type_of_disability || "Not detected", // Raw value (e.g., "ADHD")
+        type_of_disability: type_of_disability || "Not detected",
         address: address || "Not detected",
         date_of_birth: parsedDob,
-        sex: sex || "Not detected", // Raw value (e.g., "M")
-        blood_type: blood_type || "Not detected", // Raw value (e.g., "O+")
+        sex: mapSex(sex),
+        blood_type: blood_type || "Not detected",
         date_issued: parsedDateIssued,
         emergency_contact_name: emergency_contact_name || "Not provided",
         emergency_contact_number: emergency_contact_number || "Not provided",
@@ -192,15 +331,18 @@ router.post(
       });
 
       await card.save();
+      console.log("[cards] ✅ Card saved to database with ID:", card._id);
 
       await User.findByIdAndUpdate(mongoId, {
         card_id: card_id,
         updated_by: userId,
       });
+      console.log("[cards] ✅ User updated with card_id");
 
       console.log(
         `✅ Card saved: ${card_id} | front=${idFrontUrl ? "✓" : "✗"} | back=${idBackUrl ? "✓" : "✗"}`,
       );
+      console.log("=".repeat(50));
 
       res.status(201).json({
         success: true,
@@ -226,7 +368,14 @@ router.post(
         },
       });
     } catch (err: any) {
-      console.error("[POST /api/cards] Error:", err);
+      console.error("[POST /api/cards] ❌ Error:", err);
+      console.error("Error details:", {
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+        code: err.code,
+      });
+
       if (err.code === 11000) {
         res.status(409).json({
           error: "Card already registered",
@@ -234,6 +383,7 @@ router.post(
         });
         return;
       }
+
       res.status(500).json({
         error: err?.message ?? "Failed to create card",
         details:
@@ -254,15 +404,23 @@ router.get(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
+
       const userDoc = (await User.findById(mongoId)
         .select("user_id")
         .lean()) as any;
       const userId = userDoc?.user_id || mongoId;
+
       const cards = await Card.find({ user_id: userId }).sort({
         created_at: -1,
       });
-      res.json({ success: true, cards });
+
+      res.json({
+        success: true,
+        cards,
+        count: cards.length,
+      });
     } catch (err: any) {
+      console.error("[GET /api/cards/me] Error:", err);
       res.status(500).json({ error: err?.message ?? "Failed to fetch cards" });
     }
   },
@@ -279,11 +437,14 @@ router.get(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
+
       const userDoc = (await User.findById(mongoId)
         .select("user_id card_id is_verified")
         .lean()) as any;
       const userId = userDoc?.user_id || mongoId;
+
       const card = await Card.findOne({ user_id: userId }).lean();
+
       res.json({
         success: true,
         hasCard: !!card,
@@ -291,6 +452,7 @@ router.get(
         card: card ?? null,
       });
     } catch (err: any) {
+      console.error("[GET /api/cards/check] Error:", err);
       res.status(500).json({ error: err?.message ?? "Failed to check card" });
     }
   },
@@ -303,12 +465,34 @@ router.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const card = await Card.findById(req.params.id);
+
       if (!card) {
         res.status(404).json({ error: "Card not found" });
         return;
       }
-      res.json({ success: true, card });
+
+      // Check if user has access to this card
+      const mongoId = req.userId;
+      const userDoc = (await User.findById(mongoId).lean()) as any;
+      const userId = userDoc?.user_id || mongoId;
+
+      // Allow access if user is admin or owns the card
+      const isAdmin = userDoc?.role === "MSWD-CSWDO-PDAO";
+      const isOwner = card.user_id === userId;
+
+      if (!isAdmin && !isOwner) {
+        res
+          .status(403)
+          .json({ error: "Forbidden: You don't have access to this card" });
+        return;
+      }
+
+      res.json({
+        success: true,
+        card,
+      });
     } catch (err: any) {
+      console.error("[GET /api/cards/:id] Error:", err);
       res.status(500).json({ error: err?.message ?? "Failed to fetch card" });
     }
   },
