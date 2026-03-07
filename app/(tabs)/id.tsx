@@ -1,6 +1,6 @@
 // app/(tabs)/id.tsx
-import { useAuth } from "@/context/AuthContext";
 import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth"; // Change this import
 import { useRouter } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -675,7 +675,7 @@ function FlipCard({ data }: { data: CardData }) {
 // ─── Main Screen ─────────────────────────────────────────────────────────
 
 export default function IDScreen() {
-  const { user } = useAuth();
+  const { user } = useAuthStore(); // Updated to useAuthStore
   const router = useRouter();
   const [card, setCard] = useState<CardData | null>(null);
   const [loading, setLoading] = useState(true);

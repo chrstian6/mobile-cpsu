@@ -1,49 +1,52 @@
 // app/_layout.tsx
-import { AuthProvider } from "@/context/AuthContext";
-import { Stack } from "expo-router";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, StatusBar, View } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { AuthProvider } from "@/providers/AuthProviders";
+import { useAuthStore } from "@/stores/auth";
+import { router, Stack } from "expo-router";
+import { useEffect, useRef } from "react";
 import "../global.css";
 
-// Simple loading screen
-function LoadingScreen() {
+function RootLayoutNav() {
+  const { user, isLoading } = useAuthStore();
+  const prevUserRef = useRef<typeof user | undefined>(undefined);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    const prevUser = prevUserRef.current;
+    prevUserRef.current = user;
+
+    if (user) {
+      // Logged in: go to tabs
+      router.replace("/(tabs)");
+    } else if (prevUser !== undefined && prevUser !== null && !user) {
+      // User just logged OUT (had a user, now null) → go to login
+      router.replace("/(auth)/login");
+    } else if (prevUser === undefined && !user) {
+      // App just started with no session → go to index (get started)
+      router.replace("/");
+    }
+  }, [user, isLoading]);
+
   return (
-    <View
-      style={{
-        flex: 1,
-        justifyContent: "center",
-        alignItems: "center",
-        backgroundColor: "#fff",
-      }}
-    >
-      <ActivityIndicator size="large" color="#14532d" />
-    </View>
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="index" />
+      <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="apply" options={{ headerShown: false }} />
+      <Stack.Screen name="scan-id" options={{ headerShown: false }} />
+      <Stack.Screen name="scan-id-success" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="face-verification-web"
+        options={{ headerShown: false }}
+      />
+    </Stack>
   );
 }
 
-// ── Root layout ───────────────────────────────────────────────────────────────
 export default function RootLayout() {
-  const [isReady, setIsReady] = useState(false);
-
-  useEffect(() => {
-    // Small delay to ensure everything is loaded
-    const timer = setTimeout(() => {
-      setIsReady(true);
-    }, 100);
-    return () => clearTimeout(timer);
-  }, []);
-
-  if (!isReady) {
-    return <LoadingScreen />;
-  }
-
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-        <Stack screenOptions={{ headerShown: false }} />
-      </AuthProvider>
-    </SafeAreaProvider>
+    <AuthProvider>
+      <RootLayoutNav />
+    </AuthProvider>
   );
 }

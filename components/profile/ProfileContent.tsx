@@ -1,6 +1,6 @@
-// app/(tabs)/profile.tsx
-import { useAuth } from "@/context/AuthContext";
+// components/profile/ProfileContent.tsx
 import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
 import { Href, router } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -20,20 +20,12 @@ import {
   User,
   XCircle,
 } from "lucide-react-native";
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useCallback, useEffect, useState } from "react";
+import { Pressable, ScrollView, Text, View } from "react-native";
 
 const EXPRESS_API_BASE =
-  process.env.EXPO_PUBLIC_EXPRESS_URL || "http://192.168.1.194:3001";
+  process.env.EXPO_PUBLIC_EXPRESS_URL || "http://192.168.254.100:3001";
 
-// ─── Identical to index.tsx ────────────────────────────────────────────────
 type UserStatus =
   | "loading"
   | "verified"
@@ -44,28 +36,15 @@ type UserStatus =
   | "cancelled_application"
   | "new_user";
 
-// ─── Design tokens ─────────────────────────────────────────────────────────
-
-type StatusVariant =
-  | "success"
-  | "warning"
-  | "info"
-  | "error"
-  | "neutral"
-  | "muted";
-
 interface BadgeTokens {
-  // on dark green header
   headerBg: string;
   headerBorder: string;
   headerDot: string;
   headerText: string;
-  // on white info row
   rowIconBg: string;
   rowIconColor: string;
   rowTextColor: string;
   rowDot: string;
-  // label shown in badge / row
   label: string;
 }
 
@@ -171,8 +150,6 @@ const STATUS_ICON: Record<UserStatus, any> = {
   new_user: AlertTriangle,
 };
 
-// ─── Header Badge ──────────────────────────────────────────────────────────
-
 function HeaderStatusBadge({ status }: { status: UserStatus }) {
   const t = BADGE_TOKENS[status];
   return (
@@ -188,8 +165,6 @@ function HeaderStatusBadge({ status }: { status: UserStatus }) {
     </View>
   );
 }
-
-// ─── Info Row Badge ────────────────────────────────────────────────────────
 
 function InfoRowStatus({ status }: { status: UserStatus }) {
   const t = BADGE_TOKENS[status];
@@ -211,62 +186,27 @@ function InfoRowStatus({ status }: { status: UserStatus }) {
   );
 }
 
-// ─── Main Screen ───────────────────────────────────────────────────────────
+interface ProfileContentProps {
+  onClose?: () => void;
+  showHeader?: boolean;
+  onLogout?: () => void; // Add this prop for external logout handler
+}
 
-export default function ProfileScreen() {
-  const { user, logout } = useAuth();
-  const hasRedirected = useRef(false);
-  const [isMounted, setIsMounted] = useState(false);
+export function ProfileContent({
+  onClose,
+  showHeader = true,
+  onLogout, // Add this prop
+}: ProfileContentProps) {
+  const { user, logout } = useAuthStore();
   const [userStatus, setUserStatus] = useState<UserStatus>("loading");
   const [statusCheckDone, setStatusCheckDone] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-  // Check if user exists, if not redirect to auth - but only once
-  useEffect(() => {
-    console.log("ProfileScreen - user check:", {
-      user: !!user,
-      hasRedirected: hasRedirected.current,
-    });
-
-    if (!user && !hasRedirected.current) {
-      console.log("No user found in ProfileScreen, redirecting to auth NOW");
-      hasRedirected.current = true;
-
-      // Use setTimeout to ensure navigation happens after state updates
-      setTimeout(() => {
-        router.replace("/");
-      }, 50);
-    }
-
-    // Reset flag when user becomes available
-    if (user) {
-      console.log("User available in ProfileScreen, resetting redirect flag");
-      hasRedirected.current = false;
-    }
-  }, [user]);
-
-  // Force a re-check when user becomes null
-  useEffect(() => {
-    if (!user) {
-      console.log("ProfileScreen - user is null, forcing redirect check");
-      // This will trigger the first useEffect again
-    }
-  }, [user]);
-
-  useEffect(() => {
-    setIsMounted(true);
-    console.log("ProfileScreen mounted");
-    return () => {
-      console.log("ProfileScreen unmounting");
-    };
-  }, []);
-
-  // Identical logic to index.tsx
   const checkUserStatus = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
       if (!token) return;
 
-      // Step 1: card check
       const cardRes = await fetch(`${EXPRESS_API_BASE}/api/cards/check`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -284,7 +224,6 @@ export default function ProfileScreen() {
         }
       }
 
-      // Step 2: application check
       const appRes = await fetch(`${EXPRESS_API_BASE}/api/applications/me`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -307,7 +246,6 @@ export default function ProfileScreen() {
         }
       }
 
-      // Step 3: no card, no application
       setUserStatus("new_user");
       setStatusCheckDone(true);
     } catch (err) {
@@ -318,10 +256,8 @@ export default function ProfileScreen() {
   }, [user?.is_verified]);
 
   useEffect(() => {
-    if (user) {
-      checkUserStatus();
-    }
-  }, [user, checkUserStatus]);
+    checkUserStatus();
+  }, [checkUserStatus]);
 
   useEffect(() => {
     if (user?.is_verified === true && userStatus !== "verified") {
@@ -329,29 +265,41 @@ export default function ProfileScreen() {
     }
   }, [user?.is_verified, userStatus]);
 
-  // Don't render anything if there's no user
-  if (!user) {
-    console.log("ProfileScreen - rendering null because no user");
-    return null;
-  }
-
-  if (!isMounted) {
-    return (
-      <SafeAreaView className="flex-1 bg-gray-50">
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator size="large" color="#166534" />
-          <Text className="text-gray-400 mt-3 text-[13px]">
-            Loading profile…
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  if (!user) return null;
 
   const handleLogout = async () => {
-    console.log("ProfileScreen - logout button pressed");
+    if (isLoggingOut) return;
+
+    setIsLoggingOut(true);
+
+    // If an external logout handler is provided (from ProfileSheet), use it
+    if (onLogout) {
+      // Close the sheet first if onClose exists
+      if (onClose) {
+        onClose();
+      }
+      // Call the external logout handler
+      onLogout();
+      return;
+    }
+
+    // Otherwise, handle logout directly (for standalone ProfileContent)
+    if (onClose) {
+      onClose();
+      // Small delay to allow sheet to close
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    // Perform logout
     await logout();
-    // Navigation will be handled by the useEffect above
+
+    // Note: We don't need to set isLoggingOut false here
+    // The component will unmount when redirected to login
+  };
+
+  const handleMenuNav = (screen: Href) => {
+    if (onClose) onClose();
+    setTimeout(() => router.push(screen), 300);
   };
 
   const menuItems: { title: string; icon: any; screen: Href }[] = [
@@ -390,9 +338,9 @@ export default function ProfileScreen() {
   ];
 
   return (
-    <SafeAreaView className="flex-1 bg-gray-50" edges={["bottom"]}>
-      <ScrollView showsVerticalScrollIndicator={false}>
-        {/* ── Header ── */}
+    <ScrollView showsVerticalScrollIndicator={false}>
+      {/* ── Header ── */}
+      {showHeader && (
         <View className="bg-green-900 pt-10 pb-16 px-6">
           <View className="items-center">
             <View
@@ -421,98 +369,98 @@ export default function ProfileScreen() {
                   {user?.role ?? "User"}
                 </Text>
               </View>
-              {/* Always render badge — shows "Loading…" until check is done */}
               <HeaderStatusBadge status={userStatus} />
             </View>
           </View>
         </View>
+      )}
 
-        {/* ── Profile Info Card ── */}
-        <View className="mx-5 -mt-6 mb-5">
-          <View
-            className="bg-white rounded-2xl overflow-hidden"
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.07,
-              shadowRadius: 6,
-              elevation: 3,
-            }}
-          >
-            {infoRows.map((row, i) => {
-              const Icon = row.icon;
-              return (
-                <View
-                  key={i}
-                  className={`flex-row items-center px-5 py-3.5 ${
-                    i !== infoRows.length - 1 ? "border-b border-gray-50" : ""
-                  }`}
-                >
-                  <View className="w-8 h-8 bg-gray-50 rounded-lg items-center justify-center mr-3">
-                    <Icon size={15} color="#9ca3af" />
-                  </View>
-                  <Text className="text-gray-600 text-[13px] flex-1">
-                    {row.value}
-                  </Text>
+      {/* ── Profile Info Card ── */}
+      <View className={`${showHeader ? "mx-5 -mt-6" : "mx-5 mt-5"} mb-5`}>
+        <View
+          className="bg-white rounded-2xl overflow-hidden"
+          style={{
+            shadowColor: "#000",
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.07,
+            shadowRadius: 6,
+            elevation: 3,
+          }}
+        >
+          {infoRows.map((row, i) => {
+            const Icon = row.icon;
+            return (
+              <View
+                key={i}
+                className={`flex-row items-center px-5 py-3.5 ${
+                  i !== infoRows.length - 1 ? "border-b border-gray-50" : ""
+                }`}
+              >
+                <View className="w-8 h-8 bg-gray-50 rounded-lg items-center justify-center mr-3">
+                  <Icon size={15} color="#9ca3af" />
                 </View>
-              );
-            })}
-
-            {/* Status row — always shown, updates once check is done */}
-            <InfoRowStatus status={userStatus} />
-          </View>
+                <Text className="text-gray-600 text-[13px] flex-1">
+                  {row.value}
+                </Text>
+              </View>
+            );
+          })}
+          <InfoRowStatus status={userStatus} />
         </View>
+      </View>
 
-        {/* ── Menu ── */}
-        <View className="px-5">
-          <View
-            className="bg-white rounded-2xl overflow-hidden"
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 1 },
-              shadowOpacity: 0.05,
-              shadowRadius: 4,
-              elevation: 2,
-            }}
-          >
-            {menuItems.map((item, index) => {
-              const Icon = item.icon;
-              return (
-                <Pressable
-                  key={index}
-                  className={`flex-row items-center px-5 py-4 ${
-                    index !== menuItems.length - 1
-                      ? "border-b border-gray-50"
-                      : ""
-                  }`}
-                  onPress={() => router.push(item.screen)}
-                >
-                  <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
-                    <Icon size={15} color="#166534" />
-                  </View>
-                  <Text className="flex-1 text-gray-800 text-[14px] font-semibold">
-                    {item.title}
-                  </Text>
-                  <ChevronRight size={16} color="#d1d5db" />
-                </Pressable>
-              );
-            })}
-          </View>
+      {/* ── Menu ── */}
+      <View className="px-5">
+        <View
+          className="bg-white rounded-2xl overflow-hidden"
+          style={{
+            shadowColor: "#000",
+            shadowOffset: { width: 0, height: 1 },
+            shadowOpacity: 0.05,
+            shadowRadius: 4,
+            elevation: 2,
+          }}
+        >
+          {menuItems.map((item, index) => {
+            const Icon = item.icon;
+            return (
+              <Pressable
+                key={index}
+                className={`flex-row items-center px-5 py-4 ${
+                  index !== menuItems.length - 1
+                    ? "border-b border-gray-50"
+                    : ""
+                }`}
+                onPress={() => handleMenuNav(item.screen)}
+              >
+                <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
+                  <Icon size={15} color="#166534" />
+                </View>
+                <Text className="flex-1 text-gray-800 text-[14px] font-semibold">
+                  {item.title}
+                </Text>
+                <ChevronRight size={16} color="#d1d5db" />
+              </Pressable>
+            );
+          })}
         </View>
+      </View>
 
-        {/* ── Logout ── */}
-        <View className="px-5 mt-5 mb-10">
-          <Pressable
-            className="bg-red-50 border border-red-100 rounded-2xl py-4 flex-row items-center justify-center gap-2"
-            onPress={handleLogout}
-          >
-            <LogOut size={17} color="#dc2626" />
-            <Text className="text-red-600 text-[14px] font-bold tracking-tight">
-              Sign Out
-            </Text>
-          </Pressable>
-        </View>
-      </ScrollView>
-    </SafeAreaView>
+      {/* ── Logout ── */}
+      <View className="px-5 mt-5 mb-10">
+        <Pressable
+          className={`bg-red-50 border border-red-100 rounded-2xl py-4 flex-row items-center justify-center gap-2 ${
+            isLoggingOut ? "opacity-50" : ""
+          }`}
+          onPress={handleLogout}
+          disabled={isLoggingOut}
+        >
+          <LogOut size={17} color="#dc2626" />
+          <Text className="text-red-600 text-[14px] font-bold tracking-tight">
+            {isLoggingOut ? "Signing Out..." : "Sign Out"}
+          </Text>
+        </Pressable>
+      </View>
+    </ScrollView>
   );
 }
