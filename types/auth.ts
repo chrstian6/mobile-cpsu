@@ -10,6 +10,17 @@ export type AuthUser = {
   is_verified: boolean;
   is_email_verified: boolean;
   avatar_url: string | null;
+  contact_number?: string;
+  sex?: string;
+  date_of_birth?: string;
+  address?: {
+    street?: string;
+    barangay?: string;
+    city_municipality?: string;
+    province?: string;
+    region?: string;
+  };
+  created_at?: string;
 };
 
 export type LoginPayload = {

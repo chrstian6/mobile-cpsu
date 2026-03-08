@@ -1,15 +1,20 @@
 // app/(tabs)/index.tsx
-// ─── CHANGES FROM ORIGINAL ───────────────────────────────────────────────────
-// 1. Added `useRouter` to imports from "expo-router"
-// 2. Added `const router = useRouter();` inside HomeScreen
-// 3. Added `onPress={() => router.push("/scan-id")}` to the Scan PWD ID button
-// Everything else is IDENTICAL to your original file.
-// ─────────────────────────────────────────────────────────────────────────────
-
-import { useAuth } from "@/context/AuthContext";
-import { useRouter } from "expo-router"; // ← ADD THIS
-import { Bell, ChevronRight } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { ProfileSheet } from "@/components/profile/ProfileSheet";
+import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
+import { router } from "expo-router";
+import * as SecureStore from "expo-secure-store";
+import {
+  AlertCircle,
+  AlertTriangle,
+  Bell,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  FileText,
+  XCircle,
+} from "lucide-react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dimensions,
   FlatList,
@@ -21,6 +26,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+const EXPRESS_API_BASE =
+  process.env.EXPO_PUBLIC_EXPRESS_URL || "http://192.168.1.194:3001";
 const { width } = Dimensions.get("window");
 
 const ads = [
@@ -108,13 +115,377 @@ const services = [
   },
 ];
 
+type UserStatus =
+  | "loading"
+  | "verified"
+  | "pending_card"
+  | "pending_application"
+  | "approved_application"
+  | "rejected_application"
+  | "cancelled_application"
+  | "new_user";
+
+type StatusVariant =
+  | "success"
+  | "warning"
+  | "info"
+  | "error"
+  | "neutral"
+  | "muted";
+
+const STATUS_PALETTE: Record<
+  StatusVariant,
+  {
+    bg: string;
+    border: string;
+    iconBg: string;
+    iconColor: string;
+    labelColor: string;
+    sublabelColor: string;
+    badgeBg: string;
+    badgeDot: string;
+    badgeText: string;
+    badgeTextColor: string;
+    accentBar: string;
+  }
+> = {
+  success: {
+    bg: "bg-emerald-50",
+    border: "border-emerald-200",
+    iconBg: "bg-emerald-100",
+    iconColor: "#059669",
+    labelColor: "text-emerald-900",
+    sublabelColor: "text-emerald-600",
+    badgeBg: "bg-emerald-100",
+    badgeDot: "bg-emerald-500",
+    badgeText: "Active",
+    badgeTextColor: "text-emerald-700",
+    accentBar: "bg-emerald-400",
+  },
+  warning: {
+    bg: "bg-amber-50",
+    border: "border-amber-200",
+    iconBg: "bg-amber-100",
+    iconColor: "#D97706",
+    labelColor: "text-amber-900",
+    sublabelColor: "text-amber-600",
+    badgeBg: "bg-amber-100",
+    badgeDot: "bg-amber-400",
+    badgeText: "Pending",
+    badgeTextColor: "text-amber-700",
+    accentBar: "bg-amber-400",
+  },
+  info: {
+    bg: "bg-blue-50",
+    border: "border-blue-200",
+    iconBg: "bg-blue-100",
+    iconColor: "#2563EB",
+    labelColor: "text-blue-900",
+    sublabelColor: "text-blue-600",
+    badgeBg: "bg-blue-100",
+    badgeDot: "bg-blue-400",
+    badgeText: "In Review",
+    badgeTextColor: "text-blue-700",
+    accentBar: "bg-blue-400",
+  },
+  error: {
+    bg: "bg-red-50",
+    border: "border-red-200",
+    iconBg: "bg-red-100",
+    iconColor: "#DC2626",
+    labelColor: "text-red-900",
+    sublabelColor: "text-red-600",
+    badgeBg: "bg-red-100",
+    badgeDot: "bg-red-400",
+    badgeText: "Action Needed",
+    badgeTextColor: "text-red-700",
+    accentBar: "bg-red-400",
+  },
+  neutral: {
+    bg: "bg-gray-50",
+    border: "border-gray-200",
+    iconBg: "bg-gray-100",
+    iconColor: "#6B7280",
+    labelColor: "text-gray-900",
+    sublabelColor: "text-gray-500",
+    badgeBg: "bg-gray-100",
+    badgeDot: "bg-gray-400",
+    badgeText: "Inactive",
+    badgeTextColor: "text-gray-600",
+    accentBar: "bg-gray-300",
+  },
+  muted: {
+    bg: "bg-slate-50",
+    border: "border-slate-200",
+    iconBg: "bg-slate-100",
+    iconColor: "#94A3B8",
+    labelColor: "text-slate-700",
+    sublabelColor: "text-slate-400",
+    badgeBg: "bg-slate-100",
+    badgeDot: "bg-slate-300",
+    badgeText: "Loading",
+    badgeTextColor: "text-slate-500",
+    accentBar: "bg-slate-200",
+  },
+};
+
+interface StatusConfig {
+  variant: StatusVariant;
+  icon: any;
+  label: string;
+  sublabel: string;
+  showActions: boolean;
+  primaryAction?: { label: string; screen: string };
+  secondaryAction?: { label: string; screen: string };
+}
+
+const getStatusConfig = (s: UserStatus): StatusConfig => {
+  switch (s) {
+    case "verified":
+      return {
+        variant: "success",
+        icon: CheckCircle2,
+        label: "PWD ID Verified",
+        sublabel: "Your identification is active and valid",
+        showActions: false,
+      };
+    case "pending_card":
+      return {
+        variant: "warning",
+        icon: Clock,
+        label: "Card Under Verification",
+        sublabel: "Your physical ID is being processed by the PDAO office",
+        showActions: false,
+      };
+    case "approved_application":
+      return {
+        variant: "success",
+        icon: CheckCircle2,
+        label: "Application Approved",
+        sublabel: "Your application has been approved — ID issuance is next",
+        showActions: false,
+      };
+    case "pending_application":
+      return {
+        variant: "info",
+        icon: FileText,
+        label: "Application Under Review",
+        sublabel: "Your application is being reviewed by the PDAO office",
+        showActions: false,
+      };
+    case "rejected_application":
+      return {
+        variant: "error",
+        icon: XCircle,
+        label: "Application Rejected",
+        sublabel:
+          "Your application did not meet the requirements. You may reapply.",
+        showActions: true,
+        primaryAction: { label: "Reapply Now", screen: "/apply" },
+      };
+    case "cancelled_application":
+      return {
+        variant: "neutral",
+        icon: AlertCircle,
+        label: "Application Cancelled",
+        sublabel:
+          "This application was cancelled. Submit a new one to continue.",
+        showActions: true,
+        primaryAction: { label: "New Application", screen: "/apply" },
+      };
+    case "new_user":
+      return {
+        variant: "error",
+        icon: AlertTriangle,
+        label: "Registration Incomplete",
+        sublabel:
+          "Submit an application or scan your existing PWD ID to get started",
+        showActions: true,
+        primaryAction: { label: "Apply Now", screen: "/apply" },
+        secondaryAction: { label: "Scan ID", screen: "/scan-id" },
+      };
+    default:
+      return {
+        variant: "muted",
+        icon: Clock,
+        label: "Checking Status…",
+        sublabel: "Please wait while we retrieve your information",
+        showActions: false,
+      };
+  }
+};
+
+function StatusCard({ userStatus }: { userStatus: UserStatus }) {
+  const config = getStatusConfig(userStatus);
+  const palette = STATUS_PALETTE[config.variant];
+  const Icon = config.icon;
+
+  return (
+    <View
+      className={`${palette.bg} border ${palette.border} rounded-2xl overflow-hidden`}
+      style={{
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 4,
+        elevation: 2,
+      }}
+    >
+      <View className={`h-[3px] w-full ${palette.accentBar}`} />
+      <View className="p-4">
+        <View className="flex-row items-start gap-3">
+          <View
+            className={`w-10 h-10 rounded-xl items-center justify-center ${palette.iconBg} mt-0.5`}
+          >
+            <Icon size={20} color={palette.iconColor} strokeWidth={2} />
+          </View>
+          <View className="flex-1">
+            <Text
+              className={`${palette.labelColor} text-[14px] font-bold tracking-tight`}
+            >
+              {config.label}
+            </Text>
+            <Text
+              className={`${palette.sublabelColor} text-[12px] leading-[17px] mt-0.5`}
+            >
+              {config.sublabel}
+            </Text>
+          </View>
+          <View
+            className={`${palette.badgeBg} rounded-full px-2.5 py-1 flex-row items-center gap-1.5`}
+          >
+            <View className={`w-1.5 h-1.5 rounded-full ${palette.badgeDot}`} />
+            <Text
+              className={`${palette.badgeTextColor} text-[10px] font-semibold tracking-wide`}
+            >
+              {palette.badgeText}
+            </Text>
+          </View>
+        </View>
+        {config.showActions && (
+          <>
+            <View className="h-px bg-black/5 my-3.5 mx-1" />
+            <View className="flex-row gap-2">
+              {config.primaryAction && (
+                <Pressable
+                  onPress={() =>
+                    router.push(config.primaryAction!.screen as any)
+                  }
+                  className={`flex-1 rounded-xl py-2.5 items-center justify-center ${config.variant === "error" ? "bg-red-600" : config.variant === "neutral" ? "bg-gray-700" : "bg-green-700"}`}
+                  style={{
+                    shadowColor:
+                      config.variant === "error" ? "#DC2626" : "#166534",
+                    shadowOffset: { width: 0, height: 2 },
+                    shadowOpacity: 0.2,
+                    shadowRadius: 4,
+                    elevation: 3,
+                  }}
+                >
+                  <Text className="text-white text-[13px] font-semibold tracking-tight">
+                    {config.primaryAction.label}
+                  </Text>
+                </Pressable>
+              )}
+              {config.secondaryAction && (
+                <Pressable
+                  onPress={() =>
+                    router.push(config.secondaryAction!.screen as any)
+                  }
+                  className="flex-1 rounded-xl py-2.5 items-center justify-center bg-white border border-gray-200"
+                >
+                  <Text className="text-gray-700 text-[13px] font-semibold tracking-tight">
+                    {config.secondaryAction.label}
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+          </>
+        )}
+      </View>
+    </View>
+  );
+}
+
 export default function HomeScreen() {
-  const { user } = useAuth();
-  const router = useRouter(); // ← ADD THIS
+  const { user, logout } = useAuthStore();
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
   const [currentAdIndex, setCurrentAdIndex] = useState(0);
   const bannerRef = useRef<FlatList>(null);
   const adRef = useRef<FlatList>(null);
+  const [userStatus, setUserStatus] = useState<UserStatus>("loading");
+  const [statusCheckDone, setStatusCheckDone] = useState(false);
+  const [profileSheetVisible, setProfileSheetVisible] = useState(false);
+
+  // Close the sheet first, then call logout.
+  // The store's logout() shows the Alert confirmation.
+  // After confirm, user → null triggers _layout.tsx → router.replace("/(auth)/login")
+  const handleLogout = () => {
+    setProfileSheetVisible(false);
+    setTimeout(() => {
+      logout();
+    }, 300);
+  };
+
+  const checkUserStatus = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+      if (!token) return;
+
+      const cardRes = await fetch(`${EXPRESS_API_BASE}/api/cards/check`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (cardRes.ok) {
+        const cardData = await cardRes.json();
+        if (cardData.card) {
+          setUserStatus(
+            cardData.is_verified === true || user?.is_verified === true
+              ? "verified"
+              : "pending_card",
+          );
+          setStatusCheckDone(true);
+          return;
+        }
+      }
+
+      const appRes = await fetch(`${EXPRESS_API_BASE}/api/applications/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (appRes.ok) {
+        const appData = await appRes.json();
+        if (appData.applications?.length > 0) {
+          const latestApp = appData.applications[0];
+          const map: Record<string, UserStatus> = {
+            Approved: "approved_application",
+            Rejected: "rejected_application",
+            Cancelled: "cancelled_application",
+            Draft: "pending_application",
+            Submitted: "pending_application",
+            "Under Review": "pending_application",
+          };
+          setUserStatus(map[latestApp.status] ?? "pending_application");
+          setStatusCheckDone(true);
+          return;
+        }
+      }
+
+      setUserStatus("new_user");
+      setStatusCheckDone(true);
+    } catch (err) {
+      console.log("[home] Status check error:", err);
+      setUserStatus("new_user");
+      setStatusCheckDone(true);
+    }
+  }, [user?.is_verified]);
+
+  useEffect(() => {
+    checkUserStatus();
+  }, [checkUserStatus]);
+
+  useEffect(() => {
+    if (user?.is_verified === true && userStatus !== "verified") {
+      setUserStatus("verified");
+    }
+  }, [user?.is_verified, userStatus]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -133,6 +504,8 @@ export default function HomeScreen() {
     }, 3500);
     return () => clearInterval(interval);
   }, [currentAdIndex]);
+
+  if (!user) return null;
 
   const renderAd = ({ item }: { item: (typeof ads)[0] }) => (
     <View style={{ width }} className="px-6">
@@ -166,76 +539,35 @@ export default function HomeScreen() {
   );
 
   return (
-    <SafeAreaView className="flex-1 bg-white" edges={["bottom"]}>
+    <SafeAreaView className="flex-1 bg-white" edges={["top"]}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* ── Header ── */}
-        <View className="px-6 pt-5 pb-5">
+        {/* Header */}
+        <View className="px-6 pt-2 pb-2">
           <View className="flex-row justify-between items-center">
-            {/* Hamburger menu */}
-            <Pressable className="justify-center gap-1.5 py-1">
+            <Pressable
+              onPress={() => setProfileSheetVisible(true)}
+              className="justify-center gap-1.5 py-3 pr-3"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
               <View className="w-6 h-0.5 bg-gray-800 rounded-full" />
               <View className="w-4 h-0.5 bg-gray-800 rounded-full" />
             </Pressable>
-            {/* Bell */}
             <Pressable className="relative">
               <View className="w-10 h-10 items-center justify-center">
                 <Bell size={17} color="#374151" />
               </View>
-              <View className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-green-600 border-2 border-white" />
+              <View className="absolute top-1 right-1 w-2 h-2 rounded-full bg-green-600 border-2 border-white" />
             </Pressable>
           </View>
-
-          {/* Verification notice */}
-          {!user?.is_verified && (
-            <View className="mt-5 bg-gray-50 rounded-2xl p-4">
-              <Text className="text-gray-800 text-[13px] font-semibold mb-1">
-                Complete your registration
-              </Text>
-              <Text className="text-gray-400 text-[12px] leading-[18px] mb-4">
-                Apply for a PWD ID or scan your existing card to link your
-                record.
-              </Text>
-              <View className="flex-row gap-2">
-                <Pressable className="flex-1 bg-green-800 rounded-xl py-2.5 items-center">
-                  <Text className="text-white text-[13px] font-semibold">
-                    Apply Now
-                  </Text>
-                  <Text className="text-green-300/80 text-[10px] mt-0.5">
-                    New applicant
-                  </Text>
-                </Pressable>
-
-                {/* ── ONLY CHANGE: added onPress ── */}
-                <Pressable
-                  onPress={() => router.push("/scan-id")}
-                  className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 items-center"
-                >
-                  <Text className="text-gray-700 text-[13px] font-semibold">
-                    Scan PWD ID
-                  </Text>
-                  <Text className="text-gray-400 text-[10px] mt-0.5">
-                    Already have one?
-                  </Text>
-                </Pressable>
-
-                {/* Add this new button */}
-                <Pressable
-                  onPress={() => router.push("/face-verification-web")}
-                  className="flex-1 bg-purple-600 border border-purple-200 rounded-xl py-2.5 items-center mt-2"
-                >
-                  <Text className="text-white text-[13px] font-semibold">
-                    Face Verify (Web)
-                  </Text>
-                  <Text className="text-purple-200 text-[10px] mt-0.5">
-                    Use web ML
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
         </View>
 
-        {/* ── Ads Carousel ── */}
+        {statusCheckDone && (
+          <View className="px-6 mt-2 mb-4">
+            <StatusCard userStatus={userStatus} />
+          </View>
+        )}
+
+        {/* Ads Carousel */}
         <View className="mb-1">
           <FlatList
             ref={adRef}
@@ -258,15 +590,13 @@ export default function HomeScreen() {
             {ads.map((_, i) => (
               <View
                 key={i}
-                className={`h-1 rounded-full ${
-                  i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"
-                }`}
+                className={`h-1 rounded-full ${i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"}`}
               />
             ))}
           </View>
         </View>
 
-        {/* ── Upcoming Events ── */}
+        {/* Upcoming Events */}
         <View className="mt-7">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight px-6 mb-3">
             Upcoming Events
@@ -292,17 +622,13 @@ export default function HomeScreen() {
             {banners.map((_, i) => (
               <View
                 key={i}
-                className={`h-1 rounded-full ${
-                  i === currentBannerIndex
-                    ? "w-5 bg-green-800"
-                    : "w-1 bg-gray-200"
-                }`}
+                className={`h-1 rounded-full ${i === currentBannerIndex ? "w-5 bg-green-800" : "w-1 bg-gray-200"}`}
               />
             ))}
           </View>
         </View>
 
-        {/* ── Services ── */}
+        {/* Services */}
         <View className="px-6 mt-8">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight mb-3">
             Services
@@ -329,7 +655,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* ── Recent Activities ── */}
+        {/* Recent Activities */}
         <View className="px-6 mt-8">
           <View className="flex-row justify-between items-center mb-3">
             <Text className="text-gray-900 text-[16px] font-bold tracking-tight">
@@ -342,16 +668,11 @@ export default function HomeScreen() {
               <ChevronRight size={13} color="#166534" />
             </Pressable>
           </View>
-
           <View className="rounded-2xl border border-gray-100 overflow-hidden">
             {recentActivities.map((activity, index) => (
               <View
                 key={activity.id}
-                className={`flex-row items-center px-4 py-3.5 bg-white ${
-                  index !== recentActivities.length - 1
-                    ? "border-b border-gray-50"
-                    : ""
-                }`}
+                className={`flex-row items-center px-4 py-3.5 bg-white ${index !== recentActivities.length - 1 ? "border-b border-gray-50" : ""}`}
               >
                 <View className="w-0.5 h-8 bg-gray-200 rounded-full mr-4" />
                 <View className="flex-1">
@@ -370,7 +691,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* ── Announcements ── */}
+        {/* Announcements */}
         <View className="px-6 mt-8 mb-10">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight mb-3">
             Announcements
@@ -378,11 +699,7 @@ export default function HomeScreen() {
           {announcements.map((item, index) => (
             <Pressable
               key={item.id}
-              className={`bg-white py-5 ${
-                index !== announcements.length - 1
-                  ? "border-b border-gray-100"
-                  : ""
-              }`}
+              className={`bg-white py-5 ${index !== announcements.length - 1 ? "border-b border-gray-100" : ""}`}
             >
               <View className="flex-row justify-between items-start mb-1.5">
                 <Text className="text-gray-900 text-[14px] font-bold flex-1 mr-4">
@@ -402,6 +719,14 @@ export default function HomeScreen() {
           ))}
         </View>
       </ScrollView>
+
+      <ProfileSheet
+        visible={profileSheetVisible}
+        onClose={() => setProfileSheetVisible(false)}
+        onLogout={handleLogout}
+        userStatus={userStatus}
+        user={user}
+      />
     </SafeAreaView>
   );
 }

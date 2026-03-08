@@ -33,14 +33,17 @@
         return window.location.origin + "/face-models";
       }
 
+      // ── Resize only when image is LARGER than maxDim — never upscale ─────────
+      // Keep original size if small enough, downscale if too large.
+      // For recognition we want as large as reasonable for quality descriptors.
       const resizeImage = (img, maxDim) => {
         const canvas = document.getElementById("resize");
         const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
-        canvas
-          .getContext("2d")
-          .drawImage(img, 0, 0, canvas.width, canvas.height);
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         return canvas;
       };
 
@@ -52,19 +55,32 @@
           img.src = base64;
         });
 
-      const cropFaceToBase64 = (img, box, pad) => {
-        pad = pad || 30;
+      // ── Crop face from the ORIGINAL img using detection box from the RESIZED src
+      // Detection runs on `src` (resized). Box coords are relative to `src`.
+      // We need to scale those coords back to `img` dimensions before cropping.
+      const cropFaceFromOriginal = (img, src, box, pad) => {
+        pad = pad || 40;
+        // Scale box from src → img coordinates
+        const scaleX = img.width / src.width;
+        const scaleY = img.height / src.height;
+        const x = Math.max(0, Math.round((box.x - pad) * scaleX));
+        const y = Math.max(0, Math.round((box.y - pad) * scaleY));
+        const w = Math.min(
+          Math.round((box.width + pad * 2) * scaleX),
+          img.width - x,
+        );
+        const h = Math.min(
+          Math.round((box.height + pad * 2) * scaleY),
+          img.height - y,
+        );
         const canvas = document.getElementById("c");
-        const x = Math.max(0, box.x - pad);
-        const y = Math.max(0, box.y - pad);
-        const w = Math.min(box.width + pad * 2, img.width - x);
-        const h = Math.min(box.height + pad * 2, img.height - y);
         canvas.width = w;
         canvas.height = h;
         canvas.getContext("2d").drawImage(img, x, y, w, h, 0, 0, w, h);
         return canvas.toDataURL("image/jpeg", 0.95);
       };
 
+      // ── Euclidean distance on 128-dim descriptor ──────────────────────────────
       const euclidean = (a, b) => {
         let sum = 0;
         for (let i = 0; i < a.length; i++) {
@@ -74,6 +90,15 @@
         return Math.sqrt(sum);
       };
 
+      // ── matchScore: map distance to a human-readable % ───────────────────────
+      // face-api descriptors: same face ≈ 0.3–0.45, different ≈ 0.6–1.0
+      // Map [0, 0.6] → [100%, 0%] so that distance=0 → 100%, distance=0.6 → 0%
+      // Anything > 0.6 is clamped to 0%.
+      const distanceToScore = (dist) => {
+        const THRESHOLD = 0.6;
+        return Math.max(0, Math.min(1, 1 - dist / THRESHOLD));
+      };
+
       // ── Load models ───────────────────────────────────────────────────────────
       async function loadModels() {
         try {
@@ -81,16 +106,25 @@
           send({ type: "debug", message: "Loading models from: " + MODEL_URL });
           send({ type: "progress", value: 5 });
 
+          // tinyFaceDetector for fast detection on live frames
           await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
-          send({ type: "progress", value: 40 });
-          await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL);
-          send({ type: "progress", value: 75 });
+          send({ type: "progress", value: 30 });
+
+          // Full 68-landmark model for better alignment → better descriptor quality
+          await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+          send({ type: "progress", value: 65 });
+
+          // Recognition net — 128-dim descriptor
           await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+          send({ type: "progress", value: 90 });
+
+          // Tiny landmark net only for lightweight live-frame detection
+          await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL);
           send({ type: "progress", value: 100 });
 
           modelsLoaded = true;
           send({ type: "modelsReady" });
-          send({ type: "debug", message: "Models loaded!" });
+          send({ type: "debug", message: "All models loaded!" });
         } catch (err) {
           send({
             type: "debug",
@@ -100,10 +134,12 @@
             const CDN =
               "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model";
             await faceapi.nets.tinyFaceDetector.loadFromUri(CDN);
-            send({ type: "progress", value: 40 });
-            await faceapi.nets.faceLandmark68TinyNet.loadFromUri(CDN);
-            send({ type: "progress", value: 75 });
+            send({ type: "progress", value: 30 });
+            await faceapi.nets.faceLandmark68Net.loadFromUri(CDN);
+            send({ type: "progress", value: 65 });
             await faceapi.nets.faceRecognitionNet.loadFromUri(CDN);
+            send({ type: "progress", value: 90 });
+            await faceapi.nets.faceLandmark68TinyNet.loadFromUri(CDN);
             send({ type: "progress", value: 100 });
             modelsLoaded = true;
             send({ type: "modelsReady" });
@@ -116,6 +152,63 @@
             });
           }
         }
+      }
+
+      // ── Detect face with multiple inputSize fallbacks ─────────────────────────
+      // Returns the best detection or null. Uses full landmark net by default.
+      async function detectBestFace(
+        src,
+        { tiny = false, scoreThreshold = 0.3 } = {},
+      ) {
+        const sizes = [608, 416, 320, 224];
+        for (const size of sizes) {
+          const opts = new faceapi.TinyFaceDetectorOptions({
+            inputSize: size,
+            scoreThreshold,
+          });
+          const det = tiny
+            ? await faceapi.detectSingleFace(src, opts).withFaceLandmarks(true)
+            : await faceapi
+                .detectSingleFace(src, opts)
+                .withFaceLandmarks(false)
+                .withFaceDescriptor();
+
+          if (det) {
+            send({
+              type: "debug",
+              message:
+                "detectBestFace: inputSize=" +
+                size +
+                " score=" +
+                det.detection.score.toFixed(3),
+            });
+            return det;
+          }
+        }
+        return null;
+      }
+
+      async function detectAllFacesBest(src, { scoreThreshold = 0.2 } = {}) {
+        const sizes = [608, 416, 320, 224];
+        for (const size of sizes) {
+          const opts = new faceapi.TinyFaceDetectorOptions({
+            inputSize: size,
+            scoreThreshold,
+          });
+          const all = await faceapi
+            .detectAllFaces(src, opts)
+            .withFaceLandmarks(false)
+            .withFaceDescriptors();
+          if (all && all.length > 0) {
+            send({
+              type: "debug",
+              message:
+                "detectAllFaces: inputSize=" + size + " found=" + all.length,
+            });
+            return all;
+          }
+        }
+        return [];
       }
 
       // ── Message handler ───────────────────────────────────────────────────────
@@ -142,50 +235,39 @@
         }
 
         // ── processIdFace ─────────────────────────────────────────────────────
+        // Extracts face descriptor from the ID card photo.
+        // We resize to 1200px max to preserve detail but avoid OOM.
         if (msg.action === "processIdFace") {
           try {
             send({ type: "debug", message: "Processing ID face..." });
             const img = await loadImageFromBase64(msg.base64);
             send({
               type: "debug",
-              message: "ID image: " + img.width + "x" + img.height,
+              message: "ID image size: " + img.width + "x" + img.height,
             });
 
-            let allFaces = null;
-            const sizes = [320, 224, 416, 608];
-            for (const size of sizes) {
-              const src = resizeImage(img, 800);
-              allFaces = await faceapi
-                .detectAllFaces(
-                  src,
-                  new faceapi.TinyFaceDetectorOptions({
-                    inputSize: size,
-                    scoreThreshold: 0.2,
-                  }),
-                )
-                .withFaceLandmarks(true)
-                .withFaceDescriptors();
-              send({
-                type: "debug",
-                message:
-                  "Size " +
-                  size +
-                  ": " +
-                  (allFaces ? allFaces.length : 0) +
-                  " faces",
-              });
-              if (allFaces && allFaces.length > 0) break;
-            }
+            // Use a large resize to preserve ID photo detail
+            const src = resizeImage(img, 1200);
+            send({
+              type: "debug",
+              message: "ID resized to: " + src.width + "x" + src.height,
+            });
+
+            // Try detectAll first — ID cards sometimes have a small face region
+            let allFaces = await detectAllFacesBest(src, {
+              scoreThreshold: 0.2,
+            });
 
             if (!allFaces || allFaces.length === 0) {
               send({
                 type: "idFaceError",
                 message:
-                  "No face detected in ID. Make sure the photo is clear.",
+                  "No face detected in ID photo. Please ensure the photo is clear and well-lit.",
               });
               return;
             }
 
+            // Pick the largest face (most likely the person's photo on the ID)
             const best = allFaces.sort(
               (a, b) =>
                 b.detection.box.width * b.detection.box.height -
@@ -194,16 +276,13 @@
 
             idDescriptor = Array.from(best.descriptor);
 
-            const src = resizeImage(img, 800);
-            const scaleX = img.width / src.width;
-            const scaleY = img.height / src.height;
-
-            const cropBase64 = cropFaceToBase64(img, {
-              x: best.detection.box.x * scaleX,
-              y: best.detection.box.y * scaleY,
-              width: best.detection.box.width * scaleX,
-              height: best.detection.box.height * scaleY,
-            });
+            // Crop from original image using scaled box coords
+            const cropBase64 = cropFaceFromOriginal(
+              img,
+              src,
+              best.detection.box,
+              40,
+            );
 
             send({
               type: "idFaceDone",
@@ -213,7 +292,11 @@
             });
             send({
               type: "debug",
-              message: "ID face done! score=" + best.detection.score.toFixed(3),
+              message:
+                "ID face done! descriptor length=" +
+                idDescriptor.length +
+                " score=" +
+                best.detection.score.toFixed(3),
             });
           } catch (err) {
             send({
@@ -224,13 +307,12 @@
           return;
         }
 
-        // ── processLiveFrame (lightweight — detection only, no descriptor) ────
-        // Used only for the real-time viewfinder feedback loop.
-        // Does NOT set liveDescriptor — that happens in processLiveFinal.
+        // ── processLiveFrame ──────────────────────────────────────────────────
+        // Lightweight detection-only for viewfinder feedback.
+        // Does NOT update liveDescriptor — that's processLiveFinal's job.
         if (msg.action === "processLiveFrame") {
           try {
             const img = await loadImageFromBase64(msg.base64);
-            // Small resize is fine here — we only need detection confidence
             const src = resizeImage(img, 320);
             const det = await faceapi.detectSingleFace(
               src,
@@ -239,7 +321,6 @@
                 scoreThreshold: 0.5,
               }),
             );
-
             if (!det) {
               send({ type: "liveFrameNoFace" });
               return;
@@ -251,40 +332,45 @@
           return;
         }
 
-        // ── processLiveFinal (high quality — used for the captured photo) ─────
-        // Called once after the camera takes the full-res final photo.
-        // This is what generates the descriptor used for verification.
+        // ── processLiveFinal ──────────────────────────────────────────────────
+        // High-quality descriptor extraction from the captured selfie.
+        // Uses full landmark model (not tiny) for the best alignment quality.
         if (msg.action === "processLiveFinal") {
           try {
             send({ type: "debug", message: "Processing final live photo..." });
             const img = await loadImageFromBase64(msg.base64);
             send({
               type: "debug",
-              message: "Live photo: " + img.width + "x" + img.height,
+              message: "Live photo size: " + img.width + "x" + img.height,
             });
 
-            // Use a larger resize and higher inputSize for best descriptor quality
-            const src = resizeImage(img, 800);
+            // Use 1200px max — same scale policy as ID photo for consistency
+            const src = resizeImage(img, 1200);
+            send({
+              type: "debug",
+              message: "Live resized to: " + src.width + "x" + src.height,
+            });
 
+            // Full landmark model for best descriptor
             let det = null;
-            const sizes = [416, 320, 224];
+            const sizes = [608, 416, 320, 224];
             for (const size of sizes) {
               det = await faceapi
                 .detectSingleFace(
                   src,
                   new faceapi.TinyFaceDetectorOptions({
                     inputSize: size,
-                    scoreThreshold: 0.4,
+                    scoreThreshold: 0.3,
                   }),
                 )
-                .withFaceLandmarks(true)
+                .withFaceLandmarks(false) // full 68-point model
                 .withFaceDescriptor();
               send({
                 type: "debug",
                 message:
-                  "Live final size " +
+                  "Live final size=" +
                   size +
-                  ": " +
+                  " " +
                   (det
                     ? "found score=" + det.detection.score.toFixed(3)
                     : "not found"),
@@ -296,7 +382,7 @@
               send({
                 type: "liveFinalError",
                 message:
-                  "No face detected in captured photo. Please try again in better lighting.",
+                  "No face detected. Move closer, improve lighting, and try again.",
               });
               return;
             }
@@ -306,7 +392,10 @@
             send({
               type: "debug",
               message:
-                "Live final done! score=" + det.detection.score.toFixed(3),
+                "Live final done! descriptor length=" +
+                liveDescriptor.length +
+                " score=" +
+                det.detection.score.toFixed(3),
             });
           } catch (err) {
             send({
@@ -328,14 +417,26 @@
           }
           try {
             const distance = euclidean(idDescriptor, liveDescriptor);
-            // Threshold: 0.5 is stricter but more accurate than 0.55
-            const isMatch = distance < 0.5;
-            const matchScore = Math.max(0, Math.min(1, 1 - distance));
+
+            // THRESHOLD: 0.6 is the standard for face-api.js cross-context matching
+            // (ID photo vs selfie have lighting/angle/compression differences)
+            // Same person typically: 0.28–0.50  |  Different person: 0.60–1.0
+            const THRESHOLD = 0.6;
+            const isMatch = distance < THRESHOLD;
+
+            // Score: maps distance=0 → 100%, distance=THRESHOLD → 0%
+            const matchScore = distanceToScore(distance);
+
             send({ type: "verifyDone", isMatch, matchScore, distance });
             send({
               type: "debug",
               message:
-                "Verify: distance=" + distance.toFixed(4) + " match=" + isMatch,
+                "Verify: distance=" +
+                distance.toFixed(4) +
+                " score=" +
+                (matchScore * 100).toFixed(1) +
+                "% match=" +
+                isMatch,
             });
           } catch (err) {
             send({

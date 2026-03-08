@@ -1,78 +1,52 @@
-import { AuthProvider, useAuth } from "@/context/AuthContext";
-import { Stack, useRouter, useSegments } from "expo-router";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, StatusBar, View } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+// app/_layout.tsx
+import { AuthProvider } from "@/providers/AuthProviders";
+import { useAuthStore } from "@/stores/auth";
+import { router, Stack } from "expo-router";
+import { useEffect, useRef } from "react";
 import "../global.css";
 
-// ── Redirects unauthenticated users to login and vice versa ───────────────────
-function RouteGuard() {
-  const { user, isLoading } = useAuth();
-  const router = useRouter();
-  const segments = useSegments();
-  const [isNavigationReady, setIsNavigationReady] = useState(false);
+function RootLayoutNav() {
+  const { user, isLoading } = useAuthStore();
+  const prevUserRef = useRef<typeof user | undefined>(undefined);
 
   useEffect(() => {
-    // Small delay to ensure navigation is ready
-    const timer = setTimeout(() => {
-      setIsNavigationReady(true);
-    }, 100);
+    if (isLoading) return;
 
-    return () => clearTimeout(timer);
-  }, []);
+    const prevUser = prevUserRef.current;
+    prevUserRef.current = user;
 
-  useEffect(() => {
-    if (!isNavigationReady || isLoading) return;
-
-    const currentSegment = (segments as string[])[0];
-    const onAuthScreen = !currentSegment || currentSegment === "index";
-    const onTabsScreen = currentSegment === "(tabs)";
-
-    console.log("Route guard:", {
-      user: !!user,
-      onAuthScreen,
-      onTabsScreen,
-      currentSegment,
-    });
-
-    if (!user && !onAuthScreen) {
-      // Not authenticated and not on auth screen -> go to auth
-      console.log("Redirecting to auth");
-      router.replace("/");
-    } else if (user && onAuthScreen) {
-      // Authenticated and on auth screen -> go to tabs
-      console.log("Redirecting to tabs");
+    if (user) {
+      // Logged in: go to tabs
       router.replace("/(tabs)");
+    } else if (prevUser !== undefined && prevUser !== null && !user) {
+      // User just logged OUT (had a user, now null) → go to login
+      router.replace("/(auth)/login");
+    } else if (prevUser === undefined && !user) {
+      // App just started with no session → go to index (get started)
+      router.replace("/");
     }
-  }, [user, isLoading, segments, isNavigationReady]);
+  }, [user, isLoading]);
 
-  if (isLoading || !isNavigationReady) {
-    return (
-      <View
-        style={{
-          flex: 1,
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: "#fff",
-        }}
-      >
-        <ActivityIndicator size="large" color="#14532d" />
-      </View>
-    );
-  }
-
-  return null;
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="index" />
+      <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="apply" options={{ headerShown: false }} />
+      <Stack.Screen name="scan-id" options={{ headerShown: false }} />
+      <Stack.Screen name="scan-id-success" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="face-verification-web"
+        options={{ headerShown: false }}
+      />
+    </Stack>
+  );
 }
 
-// ── Root layout ───────────────────────────────────────────────────────────────
 export default function RootLayout() {
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <RouteGuard />
-        <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
-        <Stack screenOptions={{ headerShown: false }} />
-      </AuthProvider>
-    </SafeAreaProvider>
+    <AuthProvider>
+      <RootLayoutNav />
+    </AuthProvider>
   );
 }

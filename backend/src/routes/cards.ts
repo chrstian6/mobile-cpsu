@@ -1,66 +1,29 @@
 // backend/src/routes/cards.ts
 import { Response, Router } from "express";
-import mongoose from "mongoose";
+import multer from "multer";
 import { AuthRequest, requireAuth } from "../middleware/auth";
+import Card from "../models/Cards";
+import User from "../models/User";
+import {
+  uploadBase64ToSupabase,
+  uploadBufferToSupabase,
+} from "../utils/supabase";
 
 const router = Router();
 
-// ── User model (minimal — just to look up user_id field) ──────────────────────
-const UserSchema = new mongoose.Schema({ user_id: String }, { strict: false });
-const User = mongoose.models.User || mongoose.model("User", UserSchema);
-
-// ── Inline Card Schema ────────────────────────────────────────────────────────
-const CardSchema = new mongoose.Schema(
-  {
-    card_id: {
-      type: String,
-      required: [true, "Card ID is required"],
-      unique: true,
-      index: true,
-      match: [/^\d{2}-\d{4}-\d{3}-\d{7}$/, "Invalid Card ID format"],
-    },
-    user_id: { type: String, required: true, index: true },
-    name: { type: String, required: true, trim: true },
-    barangay: { type: String, required: true, trim: true },
-    type_of_disability: { type: String, required: true, trim: true },
-    address: { type: String, required: true, trim: true },
-    date_of_birth: { type: Date, required: true },
-    sex: { type: String, required: true, enum: ["Male", "Female", "Other"] },
-    blood_type: {
-      type: String,
-      required: true,
-      enum: ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "Unknown"],
-    },
-    date_issued: { type: Date, required: true, default: Date.now },
-    emergency_contact_name: { type: String, required: true, trim: true },
-    emergency_contact_number: { type: String, required: true, trim: true },
-    status: {
-      type: String,
-      enum: ["Active", "Expired", "Revoked", "Pending"],
-      default: "Active",
-      index: true,
-    },
-    face_image_url: { type: String, default: null },
-    face_descriptors: { type: [Number], default: null },
-    id_image_url: { type: String, default: null },
-    extracted_data: { type: mongoose.Schema.Types.Mixed, default: null },
-    last_verified_at: { type: Date, default: null },
-    verification_count: { type: Number, default: 0 },
-    created_by: { type: String, default: null },
-    updated_by: { type: String, default: null },
+// ── Multer — memory storage ───────────────────────────────────────────────────
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB per file
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"));
   },
-  {
-    timestamps: { createdAt: "created_at", updatedAt: "updated_at" },
-  },
-);
+});
 
-const Card = mongoose.models.Card || mongoose.model("Card", CardSchema);
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
+// Simple date parser
 const parseDate = (val: string | undefined): Date | null => {
   if (!val || val === "Not detected") return null;
-  // MM/DD/YYYY
   const mmddyyyy = val.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (mmddyyyy) {
     const [, m, d, y] = mmddyyyy;
@@ -70,33 +33,25 @@ const parseDate = (val: string | undefined): Date | null => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-const normalizeDisability = (raw: string): string => {
-  if (!raw || raw === "Not detected") return "Others";
-  const r = raw.toLowerCase();
-  if (r.includes("physical") || r.includes("orthopedic"))
-    return "Physical Disability";
-  if (r.includes("visual") || r.includes("blind")) return "Visual Impairment";
-  if (r.includes("deaf") || r.includes("hearing")) return "Hearing Impairment";
-  if (r.includes("speech") || r.includes("language"))
-    return "Speech Impairment";
-  if (r.includes("intellectual")) return "Intellectual Disability";
-  if (r.includes("learning")) return "Learning Disability";
-  if (r.includes("mental") || r.includes("psycho")) return "Mental Disability";
-  if (r.includes("multiple")) return "Multiple Disabilities";
-  return "Others";
+// Simple sex mapper
+const mapSex = (sex: string | undefined): string => {
+  if (!sex || sex === "Not detected") return "Not detected";
+
+  const upperSex = sex.toUpperCase().trim();
+  if (upperSex === "M") return "Male";
+  if (upperSex === "F") return "Female";
+  if (sex === "Male" || sex === "Female" || sex === "Other") return sex;
+  return sex;
 };
 
-const VALID_BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
-const normalizeBloodType = (raw: string): string => {
-  if (!raw || raw === "Not detected") return "Unknown";
-  const upper = raw.toUpperCase().trim();
-  return VALID_BLOOD_TYPES.includes(upper) ? upper : "Unknown";
-};
-
-// ── POST /api/cards — Create a verified card ──────────────────────────────────
+// ── POST /api/cards ───────────────────────────────────────────────────────────
 router.post(
   "/",
   requireAuth,
+  upload.fields([
+    { name: "id_front", maxCount: 1 },
+    { name: "id_back", maxCount: 1 },
+  ]),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const mongoId = req.userId;
@@ -105,9 +60,16 @@ router.post(
         return;
       }
 
-      // Resolve the custom user_id field (e.g. "PDAO-20260226-D069T")
-      const userDoc = await User.findById(mongoId).select("user_id").lean();
-      const userId = (userDoc as any)?.user_id || mongoId;
+      const userDoc = (await User.findById(mongoId).lean()) as any;
+      if (!userDoc) {
+        res.status(404).json({ error: "User not found" });
+        return;
+      }
+      const userId: string = userDoc.user_id || mongoId;
+
+      console.log("=".repeat(50));
+      console.log("[cards] Processing card submission for user:", userId);
+      console.log("=".repeat(50));
 
       const {
         card_id,
@@ -121,13 +83,33 @@ router.post(
         date_issued,
         emergency_contact_name,
         emergency_contact_number,
-        face_descriptors,
         match_score,
         distance,
-        extracted_data,
       } = req.body;
 
-      // ── Validate required fields ──────────────────────────────────────────────
+      // Parse stringified JSON fields from FormData
+      let face_descriptors: number[] = [];
+      let extracted_data: any = null;
+      try {
+        face_descriptors = JSON.parse(req.body.face_descriptors || "[]");
+        console.log(
+          "[cards] Parsed face_descriptors length:",
+          face_descriptors.length,
+        );
+      } catch {
+        face_descriptors = [];
+      }
+      try {
+        extracted_data = JSON.parse(req.body.extracted_data || "null");
+        console.log(
+          "[cards] Parsed extracted_data:",
+          extracted_data ? "yes" : "no",
+        );
+      } catch {
+        extracted_data = null;
+      }
+
+      // Validate
       if (!card_id) {
         res.status(400).json({ error: "Card ID is required" });
         return;
@@ -137,7 +119,6 @@ router.post(
         return;
       }
 
-      // ── Check for duplicate ───────────────────────────────────────────────────
       const existing = await Card.findOne({ card_id });
       if (existing) {
         res.status(409).json({
@@ -147,46 +128,225 @@ router.post(
         return;
       }
 
-      // ── Parse dates ───────────────────────────────────────────────────────────
       const parsedDob = parseDate(date_of_birth);
       const parsedDateIssued = parseDate(date_issued) ?? new Date();
-
       if (!parsedDob) {
         res.status(400).json({ error: "Invalid or missing date of birth" });
         return;
       }
 
-      // ── Save card ─────────────────────────────────────────────────────────────
+      // ── Upload images to Supabase ─────────────────────────────────────────────
+      const files = req.files as
+        | Record<string, Express.Multer.File[]>
+        | undefined;
+
+      const sanitizedCardId = card_id.replace(/[^a-zA-Z0-9\-]/g, "_");
+      const sanitizedUserId = userId.replace(/[^a-zA-Z0-9\-]/g, "_");
+
+      console.log("\n[cards] ========== IMAGE UPLOAD DEBUG ==========");
+      console.log("[cards] Content-Type:", req.headers["content-type"]);
+      console.log(
+        "[cards] Files received:",
+        files ? Object.keys(files) : "none",
+      );
+      console.log(
+        "[cards] Body fields present:",
+        Object.keys(req.body).filter((k) => !k.includes("base64")),
+      );
+
+      // Debug front image
+      console.log("\n[cards] 📸 FRONT IMAGE DETAILS:");
+      if (files?.id_front?.[0]) {
+        const f = files.id_front[0];
+        console.log("  ✅ From multipart: YES");
+        console.log("  - Size:", f.size, "bytes");
+        console.log("  - Mimetype:", f.mimetype);
+        console.log("  - Originalname:", f.originalname);
+        console.log("  - Buffer exists:", !!f.buffer);
+        console.log("  - Buffer length:", f.buffer?.length || 0);
+      } else {
+        console.log("  ❌ From multipart: NO");
+      }
+
+      if (req.body.id_front_base64) {
+        console.log("  ✅ From base64: YES");
+        console.log("  - Base64 length:", req.body.id_front_base64.length);
+        console.log(
+          "  - Base64 prefix:",
+          req.body.id_front_base64.substring(0, 50) + "...",
+        );
+
+        // Validate base64 format
+        const hasDataUri = req.body.id_front_base64.startsWith("data:image");
+        console.log("  - Has data URI prefix:", hasDataUri);
+      } else {
+        console.log("  ❌ From base64: NO");
+      }
+
+      // Debug back image
+      console.log("\n[cards] 📸 BACK IMAGE DETAILS:");
+      if (files?.id_back?.[0]) {
+        const f = files.id_back[0];
+        console.log("  ✅ From multipart: YES");
+        console.log("  - Size:", f.size, "bytes");
+        console.log("  - Mimetype:", f.mimetype);
+        console.log("  - Originalname:", f.originalname);
+        console.log("  - Buffer exists:", !!f.buffer);
+        console.log("  - Buffer length:", f.buffer?.length || 0);
+      } else {
+        console.log("  ❌ From multipart: NO");
+      }
+
+      if (req.body.id_back_base64) {
+        console.log("  ✅ From base64: YES");
+        console.log("  - Base64 length:", req.body.id_back_base64.length);
+
+        const hasDataUri = req.body.id_back_base64.startsWith("data:image");
+        console.log("  - Has data URI prefix:", hasDataUri);
+      } else {
+        console.log("  ❌ From base64: NO");
+      }
+
+      let idFrontUrl: string | null = null;
+      let idBackUrl: string | null = null;
+
+      // Upload front image
+      const frontPath = `${sanitizedUserId}/${sanitizedCardId}/id_front.jpg`;
+      console.log("\n[cards] 📤 Uploading front image to:", frontPath);
+
+      if (files?.id_front?.[0] && files.id_front[0].size > 0) {
+        const f = files.id_front[0];
+        console.log("[cards] Attempting multipart upload for front image...");
+        console.log("[cards] File size for upload:", f.size, "bytes");
+
+        idFrontUrl = await uploadBufferToSupabase(
+          f.buffer,
+          f.mimetype,
+          frontPath,
+        );
+
+        console.log(
+          "[cards] Multipart upload result - front URL:",
+          idFrontUrl || "FAILED",
+        );
+      } else if (req.body.id_front_base64) {
+        console.log("[cards] Attempting base64 upload for front image...");
+        console.log(
+          "[cards] Base64 length for upload:",
+          req.body.id_front_base64.length,
+        );
+
+        idFrontUrl = await uploadBase64ToSupabase(
+          req.body.id_front_base64,
+          frontPath,
+        );
+
+        console.log(
+          "[cards] Base64 upload result - front URL:",
+          idFrontUrl || "FAILED",
+        );
+      } else {
+        console.warn(
+          "[cards] ⚠️ No front image received at all - skipping upload",
+        );
+      }
+
+      // Upload back image
+      const backPath = `${sanitizedUserId}/${sanitizedCardId}/id_back.jpg`;
+      console.log("\n[cards] 📤 Uploading back image to:", backPath);
+
+      if (files?.id_back?.[0] && files.id_back[0].size > 0) {
+        const f = files.id_back[0];
+        console.log("[cards] Attempting multipart upload for back image...");
+        console.log("[cards] File size for upload:", f.size, "bytes");
+
+        idBackUrl = await uploadBufferToSupabase(
+          f.buffer,
+          f.mimetype,
+          backPath,
+        );
+
+        console.log(
+          "[cards] Multipart upload result - back URL:",
+          idBackUrl || "FAILED",
+        );
+      } else if (req.body.id_back_base64) {
+        console.log("[cards] Attempting base64 upload for back image...");
+        console.log(
+          "[cards] Base64 length for upload:",
+          req.body.id_back_base64.length,
+        );
+
+        idBackUrl = await uploadBase64ToSupabase(
+          req.body.id_back_base64,
+          backPath,
+        );
+
+        console.log(
+          "[cards] Base64 upload result - back URL:",
+          idBackUrl || "FAILED",
+        );
+      } else {
+        console.warn(
+          "[cards] ⚠️ No back image received at all - skipping upload",
+        );
+      }
+
+      console.log("\n[cards] ========== UPLOAD SUMMARY ==========");
+      console.log(
+        "[cards] Front upload:",
+        idFrontUrl ? "✅ SUCCESS" : "❌ FAILED",
+      );
+      console.log(
+        "[cards] Back upload:",
+        idBackUrl ? "✅ SUCCESS" : "❌ FAILED",
+      );
+      if (idFrontUrl) console.log("[cards] Front URL:", idFrontUrl);
+      if (idBackUrl) console.log("[cards] Back URL:", idBackUrl);
+      console.log("[cards] ====================================\n");
+
+      // ── Save card with raw values ─────────────────────────────────────────────
       const card = new Card({
         card_id,
         user_id: userId,
         name,
         barangay: barangay || "Not detected",
-        type_of_disability: normalizeDisability(type_of_disability),
+        type_of_disability: type_of_disability || "Not detected",
         address: address || "Not detected",
         date_of_birth: parsedDob,
-        sex: sex || "Other",
-        blood_type: normalizeBloodType(blood_type),
+        sex: mapSex(sex),
+        blood_type: blood_type || "Not detected",
         date_issued: parsedDateIssued,
         emergency_contact_name: emergency_contact_name || "Not provided",
         emergency_contact_number: emergency_contact_number || "Not provided",
-        status: "Active",
-        face_descriptors: face_descriptors ?? null,
+        status: "Pending",
+        face_descriptors: face_descriptors.length > 0 ? face_descriptors : null,
         extracted_data: extracted_data ?? null,
+        id_front_url: idFrontUrl,
+        id_back_url: idBackUrl,
+        id_image_url: idFrontUrl,
         last_verified_at: new Date(),
         verification_count: 1,
         created_by: userId,
       });
 
       await card.save();
+      console.log("[cards] ✅ Card saved to database with ID:", card._id);
+
+      await User.findByIdAndUpdate(mongoId, {
+        card_id: card_id,
+        updated_by: userId,
+      });
+      console.log("[cards] ✅ User updated with card_id");
 
       console.log(
-        `✅ Card created: ${card_id} | user: ${userId} | match_score: ${match_score} | distance: ${distance}`,
+        `✅ Card saved: ${card_id} | front=${idFrontUrl ? "✓" : "✗"} | back=${idBackUrl ? "✓" : "✗"}`,
       );
+      console.log("=".repeat(50));
 
       res.status(201).json({
         success: true,
-        message: "Card verified and registered successfully",
+        message: "Card submitted for admin review",
         card: {
           _id: card._id,
           card_id: card.card_id,
@@ -201,19 +361,29 @@ router.post(
           emergency_contact_name: card.emergency_contact_name,
           emergency_contact_number: card.emergency_contact_number,
           status: card.status,
+          id_front_url: card.id_front_url,
+          id_back_url: card.id_back_url,
           last_verified_at: card.last_verified_at,
           created_at: card.created_at,
         },
       });
     } catch (err: any) {
-      console.error("[POST /api/cards] Error:", err);
+      console.error("[POST /api/cards] ❌ Error:", err);
+      console.error("Error details:", {
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+        code: err.code,
+      });
+
       if (err.code === 11000) {
         res.status(409).json({
           error: "Card already registered",
-          message: "This Card ID already exists in the system.",
+          message: "This Card ID already exists.",
         });
         return;
       }
+
       res.status(500).json({
         error: err?.message ?? "Failed to create card",
         details:
@@ -223,7 +393,7 @@ router.post(
   },
 );
 
-// ── GET /api/cards/me — Current user's cards ──────────────────────────────────
+// ── GET /api/cards/me ─────────────────────────────────────────────────────────
 router.get(
   "/me",
   requireAuth,
@@ -234,31 +404,95 @@ router.get(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-      const userDoc = await User.findById(mongoId).select("user_id").lean();
-      const userId = (userDoc as any)?.user_id || mongoId;
+
+      const userDoc = (await User.findById(mongoId)
+        .select("user_id")
+        .lean()) as any;
+      const userId = userDoc?.user_id || mongoId;
+
       const cards = await Card.find({ user_id: userId }).sort({
         created_at: -1,
       });
-      res.json({ success: true, cards });
+
+      res.json({
+        success: true,
+        cards,
+        count: cards.length,
+      });
     } catch (err: any) {
+      console.error("[GET /api/cards/me] Error:", err);
       res.status(500).json({ error: err?.message ?? "Failed to fetch cards" });
     }
   },
 );
 
-// ── GET /api/cards/:id — Single card ─────────────────────────────────────────
+// ── GET /api/cards/check ──────────────────────────────────────────────────────
+router.get(
+  "/check",
+  requireAuth,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const mongoId = req.userId;
+      if (!mongoId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const userDoc = (await User.findById(mongoId)
+        .select("user_id card_id is_verified")
+        .lean()) as any;
+      const userId = userDoc?.user_id || mongoId;
+
+      const card = await Card.findOne({ user_id: userId }).lean();
+
+      res.json({
+        success: true,
+        hasCard: !!card,
+        is_verified: userDoc?.is_verified ?? false,
+        card: card ?? null,
+      });
+    } catch (err: any) {
+      console.error("[GET /api/cards/check] Error:", err);
+      res.status(500).json({ error: err?.message ?? "Failed to check card" });
+    }
+  },
+);
+
+// ── GET /api/cards/:id ────────────────────────────────────────────────────────
 router.get(
   "/:id",
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const card = await Card.findById(req.params.id);
+
       if (!card) {
         res.status(404).json({ error: "Card not found" });
         return;
       }
-      res.json({ success: true, card });
+
+      // Check if user has access to this card
+      const mongoId = req.userId;
+      const userDoc = (await User.findById(mongoId).lean()) as any;
+      const userId = userDoc?.user_id || mongoId;
+
+      // Allow access if user is admin or owns the card
+      const isAdmin = userDoc?.role === "MSWD-CSWDO-PDAO";
+      const isOwner = card.user_id === userId;
+
+      if (!isAdmin && !isOwner) {
+        res
+          .status(403)
+          .json({ error: "Forbidden: You don't have access to this card" });
+        return;
+      }
+
+      res.json({
+        success: true,
+        card,
+      });
     } catch (err: any) {
+      console.error("[GET /api/cards/:id] Error:", err);
       res.status(500).json({ error: err?.message ?? "Failed to fetch card" });
     }
   },

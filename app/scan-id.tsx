@@ -605,27 +605,63 @@ export default function ScanIdScreen() {
     try {
       const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
 
-      // Strip raw_text — it contains newlines/special chars that can break JSON
-      const payload = {
-        // Front data
-        card_id: idFrontData?.card_id,
-        name: idFrontData?.name,
-        barangay: idFrontData?.barangay,
-        type_of_disability: idFrontData?.type_of_disability,
-        // Back data
-        address: idBackData?.address,
-        date_of_birth: idBackData?.date_of_birth,
-        sex: idBackData?.sex,
-        blood_type: idBackData?.blood_type,
-        date_issued: idBackData?.date_issued,
-        emergency_contact_name: idBackData?.emergency_contact_name,
-        emergency_contact_number: idBackData?.emergency_contact_number,
-        // Verification data
-        face_descriptors: idDescriptorRef.current,
-        match_score: result.matchScore,
-        distance: result.distance,
-        // Extracted data — omit raw_text to avoid JSON parse issues
-        extracted_data: {
+      // ── Build multipart form ────────────────────────────────────────────────
+      console.log("[submit] idFrontUri:", idFrontUri);
+      console.log("[submit] idBackUri:", idBackUri);
+      const formData = new FormData();
+
+      // Attach ID front — as file (multipart) + base64 fallback
+      if (idFrontUri) {
+        const frontExt = idFrontUri.split(".").pop()?.toLowerCase() ?? "jpg";
+        const frontMime = frontExt === "png" ? "image/png" : "image/jpeg";
+        formData.append("id_front", {
+          uri: idFrontUri,
+          name: `id_front.${frontExt}`,
+          type: frontMime,
+        } as any);
+        // base64 fallback so backend can upload even if multipart file is empty
+        try {
+          const b64 = await toBase64(idFrontUri);
+          formData.append("id_front_base64", b64);
+        } catch (e) {
+          console.warn("[submit] Could not encode id_front to base64:", e);
+        }
+      }
+
+      // Attach ID back — as file (multipart) + base64 fallback
+      if (idBackUri) {
+        const backExt = idBackUri.split(".").pop()?.toLowerCase() ?? "jpg";
+        const backMime = backExt === "png" ? "image/png" : "image/jpeg";
+        formData.append("id_back", {
+          uri: idBackUri,
+          name: `id_back.${backExt}`,
+          type: backMime,
+        } as any);
+        try {
+          const b64 = await toBase64(idBackUri);
+          formData.append("id_back_base64", b64);
+        } catch (e) {
+          console.warn("[submit] Could not encode id_back to base64:", e);
+        }
+      }
+
+      // All other fields as strings
+      const fields: Record<string, string> = {
+        card_id: idFrontData?.card_id ?? "",
+        name: idFrontData?.name ?? "",
+        barangay: idFrontData?.barangay ?? "",
+        type_of_disability: idFrontData?.type_of_disability ?? "",
+        address: idBackData?.address ?? "",
+        date_of_birth: idBackData?.date_of_birth ?? "",
+        sex: idBackData?.sex ?? "",
+        blood_type: idBackData?.blood_type ?? "",
+        date_issued: idBackData?.date_issued ?? "",
+        emergency_contact_name: idBackData?.emergency_contact_name ?? "",
+        emergency_contact_number: idBackData?.emergency_contact_number ?? "",
+        match_score: result.matchScore.toString(),
+        distance: result.distance.toString(),
+        face_descriptors: JSON.stringify(idDescriptorRef.current ?? []),
+        extracted_data: JSON.stringify({
           front: {
             card_id: idFrontData?.card_id,
             name: idFrontData?.name,
@@ -641,16 +677,17 @@ export default function ScanIdScreen() {
             emergency_contact_name: idBackData?.emergency_contact_name,
             emergency_contact_number: idBackData?.emergency_contact_number,
           },
-        },
+        }),
       };
+      Object.entries(fields).forEach(([k, v]) => formData.append(k, v));
 
       const res = await fetch(`${EXPRESS_API_BASE}/api/cards`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          // No Content-Type — fetch sets multipart boundary automatically
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify(payload),
+        body: formData,
       });
 
       // Read raw text first so we can log it if JSON parsing fails
@@ -1156,7 +1193,7 @@ export default function ScanIdScreen() {
                   />
                 </View>
                 <Text className="text-[10px] text-gray-500">
-                  Distance: {result.distance.toFixed(4)} (threshold: 0.55)
+                  Distance: {result.distance.toFixed(4)} (threshold: 0.60)
                 </Text>
               </View>
             </View>
