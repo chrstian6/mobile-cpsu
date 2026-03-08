@@ -48,7 +48,8 @@
         {
           "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera for face verification."
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true

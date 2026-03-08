@@ -100,12 +100,20 @@ const announcements = [
   },
 ];
 
-const services = [
+// Services with optional route
+const services: {
+  id: number;
+  tag: string;
+  title: string;
+  description: string;
+  route?: string;
+}[] = [
   {
     id: 1,
     tag: "Financial Aid",
     title: "Cash\nAssistance",
     description: "Apply for financial support",
+    route: "/cash-assistance",
   },
   {
     id: 2,
@@ -416,9 +424,6 @@ export default function HomeScreen() {
   const [statusCheckDone, setStatusCheckDone] = useState(false);
   const [profileSheetVisible, setProfileSheetVisible] = useState(false);
 
-  // Close the sheet first, then call logout.
-  // The store's logout() shows the Alert confirmation.
-  // After confirm, user → null triggers _layout.tsx → router.replace("/(auth)/login")
   const handleLogout = () => {
     setProfileSheetVisible(false);
     setTimeout(() => {
@@ -482,9 +487,8 @@ export default function HomeScreen() {
   }, [checkUserStatus]);
 
   useEffect(() => {
-    if (user?.is_verified === true && userStatus !== "verified") {
+    if (user?.is_verified === true && userStatus !== "verified")
       setUserStatus("verified");
-    }
   }, [user?.is_verified, userStatus]);
 
   useEffect(() => {
@@ -567,7 +571,7 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* Ads Carousel */}
+        {/* Ads */}
         <View className="mb-1">
           <FlatList
             ref={adRef}
@@ -628,7 +632,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Services */}
+        {/* Services — Cash Assistance card is now tappable */}
         <View className="px-6 mt-8">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight mb-3">
             Services
@@ -637,7 +641,10 @@ export default function HomeScreen() {
             {services.map((s) => (
               <Pressable
                 key={s.id}
-                className="flex-1 bg-gray-50 rounded-2xl p-5 border border-gray-100"
+                className="flex-1 bg-gray-50 rounded-2xl p-5 border border-gray-100 active:bg-gray-100"
+                onPress={
+                  s.route ? () => router.push(s.route as any) : undefined
+                }
               >
                 <View className="self-start bg-white border border-gray-200 rounded-lg px-2.5 py-1 mb-4">
                   <Text className="text-gray-500 text-[10px] font-medium tracking-wide">
@@ -650,6 +657,14 @@ export default function HomeScreen() {
                 <Text className="text-gray-400 text-[11px] leading-[15px]">
                   {s.description}
                 </Text>
+                {s.route && (
+                  <View className="flex-row items-center mt-3 gap-1">
+                    <Text className="text-green-700 text-[11px] font-semibold">
+                      Apply Now
+                    </Text>
+                    <ChevronRight size={11} color="#15803d" strokeWidth={2.5} />
+                  </View>
+                )}
               </Pressable>
             ))}
           </View>

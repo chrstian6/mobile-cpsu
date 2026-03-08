@@ -16,13 +16,12 @@ function RootLayoutNav() {
     prevUserRef.current = user;
 
     if (user) {
-      // Logged in: go to tabs
       router.replace("/(tabs)");
     } else if (prevUser !== undefined && prevUser !== null && !user) {
-      // User just logged OUT (had a user, now null) → go to login
+      // User just logged out → go to login
       router.replace("/(auth)/login");
     } else if (prevUser === undefined && !user) {
-      // App just started with no session → go to index (get started)
+      // App started with no session → go to get started
       router.replace("/");
     }
   }, [user, isLoading]);
@@ -35,6 +34,7 @@ function RootLayoutNav() {
       <Stack.Screen name="apply" options={{ headerShown: false }} />
       <Stack.Screen name="scan-id" options={{ headerShown: false }} />
       <Stack.Screen name="scan-id-success" options={{ headerShown: false }} />
+      <Stack.Screen name="cash-assistance" options={{ headerShown: false }} />
       <Stack.Screen
         name="face-verification-web"
         options={{ headerShown: false }}

@@ -1,6 +1,7 @@
 // app/apply.tsx
-import { useAuth } from "@/context/AuthContext";
 import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { useRouter } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -8,6 +9,7 @@ import {
   BookOpen,
   Briefcase,
   Building2,
+  Calendar,
   ChevronLeft,
   CreditCard,
   FileText,
@@ -21,6 +23,7 @@ import { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -98,7 +101,7 @@ interface FormState {
   first_name: string;
   middle_name: string;
   suffix: string;
-  date_of_birth: string;
+  date_of_birth: Date | null; // ← Date object, not string
   sex: Sex | "";
   civil_status: CivilStatus | "";
   types_of_disability: TypeOfDisability[];
@@ -143,7 +146,22 @@ interface FormState {
   certifying_physician_license_no: string;
 }
 
-// ── UI Helpers ────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const formatDisplayDate = (date: Date | null): string => {
+  if (!date) return "";
+  return date.toLocaleDateString("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  });
+};
+
+// Max DOB: must be at least 1 year old
+const maxDOB = new Date();
+maxDOB.setFullYear(maxDOB.getFullYear() - 1);
+
+// ── UI Components ─────────────────────────────────────────────────────────────
 
 const SectionHeader = ({
   icon: Icon,
@@ -230,7 +248,6 @@ const ToggleChip = ({
   label: string;
   selected: boolean;
   onPress: () => void;
-  color?: string; // kept for backward compat, ignored
 }) => (
   <Pressable
     onPress={onPress}
@@ -238,9 +255,7 @@ const ToggleChip = ({
     style={{ width: "50%" }}
   >
     <View
-      className={`w-4 h-4 rounded border items-center justify-center ${
-        selected ? "bg-gray-800 border-gray-800" : "border-gray-300 bg-white"
-      }`}
+      className={`w-4 h-4 rounded border items-center justify-center ${selected ? "bg-gray-800 border-gray-800" : "border-gray-300 bg-white"}`}
     >
       {selected && <Text className="text-white text-[10px] font-bold">✓</Text>}
     </View>
@@ -267,9 +282,7 @@ const RadioChip = ({
     style={{ width: "50%" }}
   >
     <View
-      className={`w-4 h-4 rounded-full border-2 items-center justify-center ${
-        selected ? "border-gray-800" : "border-gray-300"
-      }`}
+      className={`w-4 h-4 rounded-full border-2 items-center justify-center ${selected ? "border-gray-800" : "border-gray-300"}`}
     >
       {selected && <View className="w-2 h-2 rounded-full bg-gray-800" />}
     </View>
@@ -344,21 +357,19 @@ const NameRow = ({
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
 export default function ApplyScreen() {
-  const { user } = useAuth();
+  const { user } = useAuthStore();
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [showDOBPicker, setShowDOBPicker] = useState(false);
 
-  // Pre-fill from user account where available
   const [form, setForm] = useState<FormState>({
     application_type: "New Applicant",
     last_name: user?.last_name ?? "",
     first_name: user?.first_name ?? "",
     middle_name: user?.middle_name ?? "",
     suffix: "",
-    date_of_birth: user?.date_of_birth
-      ? new Date(user.date_of_birth).toLocaleDateString("en-US")
-      : "",
+    date_of_birth: user?.date_of_birth ? new Date(user.date_of_birth) : null,
     sex: (user?.sex as Sex) ?? "",
     civil_status: "",
     types_of_disability: [],
@@ -398,12 +409,12 @@ export default function ApplyScreen() {
     accomplished_by: "Applicant",
     accom_last_name: user?.last_name ?? "",
     accom_first_name: user?.first_name ?? "",
-    accom_middle_name: user?.middle_name ?? "",
+    accom_middle_name: "",
     certifying_physician_name: "",
     certifying_physician_license_no: "",
   });
 
-  const set = (key: keyof FormState) => (val: any) =>
+  const setField = (key: keyof FormState) => (val: any) =>
     setForm((p) => ({ ...p, [key]: val }));
 
   const toggleDisability = (val: TypeOfDisability) => {
@@ -428,8 +439,7 @@ export default function ApplyScreen() {
     const e: Record<string, string> = {};
     if (!form.last_name.trim()) e.last_name = "Last name is required";
     if (!form.first_name.trim()) e.first_name = "First name is required";
-    if (!form.date_of_birth.trim())
-      e.date_of_birth = "Date of birth is required";
+    if (!form.date_of_birth) e.date_of_birth = "Date of birth is required";
     if (!form.sex) e.sex = "Sex is required";
     if (!form.civil_status) e.civil_status = "Civil status is required";
     if (form.types_of_disability.length === 0)
@@ -456,7 +466,7 @@ export default function ApplyScreen() {
         first_name: form.first_name,
         middle_name: form.middle_name || "N/A",
         suffix: form.suffix,
-        date_of_birth: form.date_of_birth,
+        date_of_birth: form.date_of_birth?.toISOString(), // ← ISO string, reliable for backend
         sex: form.sex,
         civil_status: form.civil_status,
         types_of_disability: form.types_of_disability,
@@ -548,7 +558,7 @@ export default function ApplyScreen() {
   const ErrorMsg = ({ field }: { field: string }) =>
     errors[field] ? (
       <View className="flex-row items-center gap-1 mt-1 mb-1">
-        <AlertCircle size={11} />
+        <AlertCircle size={11} color="#dc2626" />
         <Text className="text-red-600 text-[11px]">{errors[field]}</Text>
       </View>
     ) : null;
@@ -558,7 +568,7 @@ export default function ApplyScreen() {
       {/* Header */}
       <View className="bg-white border-b border-gray-100 px-4 py-3 flex-row items-center gap-3">
         <Pressable onPress={() => router.back()} className="p-1.5">
-          <ChevronLeft size={20} />
+          <ChevronLeft size={20} color="#374151" />
         </Pressable>
         <View className="flex-1">
           <Text className="text-base font-bold text-gray-900">
@@ -581,9 +591,9 @@ export default function ApplyScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* ── Notice Banner ── */}
+        {/* Notice Banner */}
         <View className="bg-blue-50 border border-blue-100 rounded-2xl p-4 mb-5 flex-row gap-3">
-          <FileText size={18} />
+          <FileText size={18} color="#2563EB" />
           <View className="flex-1">
             <Text className="text-blue-800 text-[12px] font-bold mb-0.5">
               Fields marked with * are required
@@ -608,7 +618,7 @@ export default function ApplyScreen() {
                 key={t}
                 label={t}
                 selected={form.application_type === t}
-                onPress={() => set("application_type")(t)}
+                onPress={() => setField("application_type")(t)}
               />
             ))}
           </View>
@@ -623,13 +633,12 @@ export default function ApplyScreen() {
             subtitle="Name, date of birth and sex"
           />
 
-          {/* Name row */}
           <View className="flex-row gap-2 mb-3">
             <View className="flex-1">
               <FieldLabel label="Last Name" required />
               <TextInput
                 value={form.last_name}
-                onChangeText={set("last_name")}
+                onChangeText={setField("last_name")}
                 placeholder="Last name"
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -640,7 +649,7 @@ export default function ApplyScreen() {
               <FieldLabel label="First Name" required />
               <TextInput
                 value={form.first_name}
-                onChangeText={set("first_name")}
+                onChangeText={setField("first_name")}
                 placeholder="First name"
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -654,7 +663,7 @@ export default function ApplyScreen() {
               <FieldLabel label="Middle Name" />
               <TextInput
                 value={form.middle_name}
-                onChangeText={set("middle_name")}
+                onChangeText={setField("middle_name")}
                 placeholder="Middle name"
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -664,7 +673,7 @@ export default function ApplyScreen() {
               <FieldLabel label="Suffix" />
               <TextInput
                 value={form.suffix}
-                onChangeText={set("suffix")}
+                onChangeText={setField("suffix")}
                 placeholder="Jr./Sr."
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -674,18 +683,50 @@ export default function ApplyScreen() {
 
           <Divider />
 
-          {/* Date of birth */}
+          {/* ── Date of Birth — DateTimePicker ── */}
           <View className="mt-3 mb-3">
-            <FieldLabel label="Date of Birth (mm/dd/yyyy)" required />
-            <TextInput
-              value={form.date_of_birth}
-              onChangeText={set("date_of_birth")}
-              placeholder="01/28/2000"
-              placeholderTextColor="#9ca3af"
-              keyboardType="numeric"
-              className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
-            />
+            <FieldLabel label="Date of Birth" required />
+            <Pressable
+              onPress={() => setShowDOBPicker(true)}
+              className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 flex-row items-center justify-between"
+            >
+              <Text
+                className={`text-[13px] ${form.date_of_birth ? "text-gray-900" : "text-gray-400"}`}
+              >
+                {form.date_of_birth
+                  ? formatDisplayDate(form.date_of_birth)
+                  : "Select date of birth"}
+              </Text>
+              <Calendar size={16} color="#9ca3af" />
+            </Pressable>
             <ErrorMsg field="date_of_birth" />
+
+            {showDOBPicker && (
+              <DateTimePicker
+                value={form.date_of_birth ?? maxDOB}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                maximumDate={maxDOB}
+                minimumDate={new Date(1900, 0, 1)}
+                onChange={(_, selectedDate) => {
+                  // On Android the picker closes itself; on iOS keep it open
+                  if (Platform.OS === "android") setShowDOBPicker(false);
+                  if (selectedDate) setField("date_of_birth")(selectedDate);
+                }}
+              />
+            )}
+
+            {/* iOS needs an explicit Done button to dismiss the spinner */}
+            {showDOBPicker && Platform.OS === "ios" && (
+              <Pressable
+                onPress={() => setShowDOBPicker(false)}
+                className="mt-2 self-end px-4 py-1.5 bg-gray-800 rounded-lg"
+              >
+                <Text className="text-white text-[12px] font-semibold">
+                  Done
+                </Text>
+              </Pressable>
+            )}
           </View>
 
           {/* Sex */}
@@ -697,7 +738,7 @@ export default function ApplyScreen() {
                   key={s}
                   label={s}
                   selected={form.sex === s}
-                  onPress={() => set("sex")(s)}
+                  onPress={() => setField("sex")(s)}
                 />
               ))}
             </View>
@@ -722,7 +763,7 @@ export default function ApplyScreen() {
                 key={s}
                 label={s}
                 selected={form.civil_status === s}
-                onPress={() => set("civil_status")(s)}
+                onPress={() => setField("civil_status")(s)}
               />
             ))}
           </View>
@@ -737,7 +778,6 @@ export default function ApplyScreen() {
             title="Type & Cause of Disability"
             subtitle="Select all that apply"
           />
-
           <FieldLabel label="Type of Disability" required />
           <View className="flex-row flex-wrap mb-1">
             {(
@@ -763,9 +803,7 @@ export default function ApplyScreen() {
             ))}
           </View>
           <ErrorMsg field="types_of_disability" />
-
           <Divider />
-
           <View className="mt-3">
             <FieldLabel label="Cause of Disability" />
             <View className="flex-row flex-wrap">
@@ -803,7 +841,7 @@ export default function ApplyScreen() {
           <InputField
             label="House No. and Street"
             value={form.house_no_and_street}
-            onChange={set("house_no_and_street")}
+            onChange={setField("house_no_and_street")}
             placeholder="e.g. 123 Rizal St."
           />
           <View className="flex-row gap-2">
@@ -811,7 +849,7 @@ export default function ApplyScreen() {
               <FieldLabel label="Barangay" required />
               <TextInput
                 value={form.barangay}
-                onChangeText={set("barangay")}
+                onChangeText={setField("barangay")}
                 placeholder="Barangay"
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -822,7 +860,7 @@ export default function ApplyScreen() {
               <FieldLabel label="Municipality / City" required />
               <TextInput
                 value={form.municipality}
-                onChangeText={set("municipality")}
+                onChangeText={setField("municipality")}
                 placeholder="Municipality"
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -835,7 +873,7 @@ export default function ApplyScreen() {
               <FieldLabel label="Province" required />
               <TextInput
                 value={form.province}
-                onChangeText={set("province")}
+                onChangeText={setField("province")}
                 placeholder="Province"
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -846,7 +884,7 @@ export default function ApplyScreen() {
               <FieldLabel label="Region" required />
               <TextInput
                 value={form.region}
-                onChangeText={set("region")}
+                onChangeText={setField("region")}
                 placeholder="Region"
                 placeholderTextColor="#9ca3af"
                 className="bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-3 text-[13px] text-gray-900"
@@ -868,7 +906,7 @@ export default function ApplyScreen() {
               <InputField
                 label="Landline No."
                 value={form.landline_no}
-                onChange={set("landline_no")}
+                onChange={setField("landline_no")}
                 placeholder="(02) 1234-5678"
                 keyboardType="phone-pad"
               />
@@ -877,7 +915,7 @@ export default function ApplyScreen() {
               <InputField
                 label="Mobile No."
                 value={form.mobile_no}
-                onChange={set("mobile_no")}
+                onChange={setField("mobile_no")}
                 placeholder="09XXXXXXXXX"
                 keyboardType="phone-pad"
               />
@@ -886,7 +924,7 @@ export default function ApplyScreen() {
           <InputField
             label="Email Address"
             value={form.contact_email}
-            onChange={set("contact_email")}
+            onChange={setField("contact_email")}
             placeholder="email@example.com"
             keyboardType="email-address"
           />
@@ -917,7 +955,7 @@ export default function ApplyScreen() {
                 label={e}
                 selected={form.educational_attainment === e}
                 onPress={() =>
-                  set("educational_attainment")(
+                  setField("educational_attainment")(
                     form.educational_attainment === e ? "" : e,
                   )
                 }
@@ -934,7 +972,6 @@ export default function ApplyScreen() {
             title="Employment"
             subtitle="Status, category and type"
           />
-
           <FieldLabel label="Status of Employment" />
           <View className="flex-row flex-wrap mb-3">
             {(
@@ -949,7 +986,6 @@ export default function ApplyScreen() {
                   setForm((p) => ({
                     ...p,
                     employment_status: next,
-                    // Clear occupation & org fields when switching to Unemployed
                     ...(next === "Unemployed"
                       ? {
                           occupation: "",
@@ -967,7 +1003,6 @@ export default function ApplyScreen() {
               />
             ))}
           </View>
-
           {form.employment_status === "Employed" && (
             <>
               <Divider />
@@ -981,7 +1016,7 @@ export default function ApplyScreen() {
                         label={c}
                         selected={form.employment_category === c}
                         onPress={() =>
-                          set("employment_category")(
+                          setField("employment_category")(
                             form.employment_category === c ? "" : c,
                           )
                         }
@@ -989,7 +1024,6 @@ export default function ApplyScreen() {
                     ),
                   )}
                 </View>
-
                 <FieldLabel label="Type of Employment (13b)" />
                 <View className="flex-row flex-wrap">
                   {(
@@ -1005,7 +1039,7 @@ export default function ApplyScreen() {
                       label={t}
                       selected={form.employment_type === t}
                       onPress={() =>
-                        set("employment_type")(
+                        setField("employment_type")(
                           form.employment_type === t ? "" : t,
                         )
                       }
@@ -1017,7 +1051,7 @@ export default function ApplyScreen() {
           )}
         </View>
 
-        {/* ── FIELD 14: Occupation — hidden when Unemployed ── */}
+        {/* ── FIELD 14: Occupation ── */}
         {form.employment_status !== "Unemployed" && (
           <View className="bg-white rounded-2xl p-4 mb-4 shadow-sm">
             <SectionHeader
@@ -1046,7 +1080,7 @@ export default function ApplyScreen() {
                   label={o}
                   selected={form.occupation === o}
                   onPress={() =>
-                    set("occupation")(form.occupation === o ? "" : o)
+                    setField("occupation")(form.occupation === o ? "" : o)
                   }
                 />
               ))}
@@ -1056,7 +1090,7 @@ export default function ApplyScreen() {
                 <InputField
                   label="Please specify"
                   value={form.occupation_others}
-                  onChange={set("occupation_others")}
+                  onChange={setField("occupation_others")}
                   placeholder="Specify occupation"
                 />
               </View>
@@ -1064,7 +1098,7 @@ export default function ApplyScreen() {
           </View>
         )}
 
-        {/* ── FIELD 15: Organization — hidden when Unemployed ── */}
+        {/* ── FIELD 15: Organization ── */}
         {form.employment_status !== "Unemployed" && (
           <View className="bg-white rounded-2xl p-4 mb-4 shadow-sm">
             <SectionHeader
@@ -1076,7 +1110,7 @@ export default function ApplyScreen() {
             <InputField
               label="Organization Affiliated"
               value={form.organization_affiliated}
-              onChange={set("organization_affiliated")}
+              onChange={setField("organization_affiliated")}
               placeholder="Organization name"
             />
             <View className="flex-row gap-2">
@@ -1084,7 +1118,7 @@ export default function ApplyScreen() {
                 <InputField
                   label="Contact Person"
                   value={form.org_contact_person}
-                  onChange={set("org_contact_person")}
+                  onChange={setField("org_contact_person")}
                   placeholder="Contact person"
                 />
               </View>
@@ -1092,7 +1126,7 @@ export default function ApplyScreen() {
                 <InputField
                   label="Tel. Nos."
                   value={form.org_tel_nos}
-                  onChange={set("org_tel_nos")}
+                  onChange={setField("org_tel_nos")}
                   placeholder="Tel no."
                   keyboardType="phone-pad"
                 />
@@ -1101,7 +1135,7 @@ export default function ApplyScreen() {
             <InputField
               label="Office Address"
               value={form.org_office_address}
-              onChange={set("org_office_address")}
+              onChange={setField("org_office_address")}
               placeholder="Office address"
             />
           </View>
@@ -1120,7 +1154,7 @@ export default function ApplyScreen() {
               <InputField
                 label="SSS No."
                 value={form.sss_no}
-                onChange={set("sss_no")}
+                onChange={setField("sss_no")}
                 placeholder="SSS No."
               />
             </View>
@@ -1128,7 +1162,7 @@ export default function ApplyScreen() {
               <InputField
                 label="GSIS No."
                 value={form.gsis_no}
-                onChange={set("gsis_no")}
+                onChange={setField("gsis_no")}
                 placeholder="GSIS No."
               />
             </View>
@@ -1138,7 +1172,7 @@ export default function ApplyScreen() {
               <InputField
                 label="PAG-IBIG No."
                 value={form.pag_ibig_no}
-                onChange={set("pag_ibig_no")}
+                onChange={setField("pag_ibig_no")}
                 placeholder="PAG-IBIG"
               />
             </View>
@@ -1146,7 +1180,7 @@ export default function ApplyScreen() {
               <InputField
                 label="PSN No."
                 value={form.psn_no}
-                onChange={set("psn_no")}
+                onChange={setField("psn_no")}
                 placeholder="PSN No."
               />
             </View>
@@ -1154,7 +1188,7 @@ export default function ApplyScreen() {
           <InputField
             label="PhilHealth No."
             value={form.philhealth_no}
-            onChange={set("philhealth_no")}
+            onChange={setField("philhealth_no")}
             placeholder="PhilHealth No."
           />
         </View>
@@ -1169,22 +1203,22 @@ export default function ApplyScreen() {
           <NameRow
             label="Father's Name"
             lastValue={form.father_last_name}
-            lastOnChange={set("father_last_name")}
+            lastOnChange={setField("father_last_name")}
             firstValue={form.father_first_name}
-            firstOnChange={set("father_first_name")}
+            firstOnChange={setField("father_first_name")}
             middleValue={form.father_middle_name}
-            middleOnChange={set("father_middle_name")}
+            middleOnChange={setField("father_middle_name")}
           />
           <Divider />
           <View className="mt-3">
             <NameRow
               label="Mother's Name"
               lastValue={form.mother_last_name}
-              lastOnChange={set("mother_last_name")}
+              lastOnChange={setField("mother_last_name")}
               firstValue={form.mother_first_name}
-              firstOnChange={set("mother_first_name")}
+              firstOnChange={setField("mother_first_name")}
               middleValue={form.mother_middle_name}
-              middleOnChange={set("mother_middle_name")}
+              middleOnChange={setField("mother_middle_name")}
             />
           </View>
           <Divider />
@@ -1192,11 +1226,11 @@ export default function ApplyScreen() {
             <NameRow
               label="Guardian"
               lastValue={form.guardian_last_name}
-              lastOnChange={set("guardian_last_name")}
+              lastOnChange={setField("guardian_last_name")}
               firstValue={form.guardian_first_name}
-              firstOnChange={set("guardian_first_name")}
+              firstOnChange={setField("guardian_first_name")}
               middleValue={form.guardian_middle_name}
-              middleOnChange={set("guardian_middle_name")}
+              middleOnChange={setField("guardian_middle_name")}
             />
           </View>
         </View>
@@ -1216,17 +1250,17 @@ export default function ApplyScreen() {
                 key={a}
                 label={a}
                 selected={form.accomplished_by === a}
-                onPress={() => set("accomplished_by")(a)}
+                onPress={() => setField("accomplished_by")(a)}
               />
             ))}
           </View>
           <NameRow
             lastValue={form.accom_last_name}
-            lastOnChange={set("accom_last_name")}
+            lastOnChange={setField("accom_last_name")}
             firstValue={form.accom_first_name}
-            firstOnChange={set("accom_first_name")}
+            firstOnChange={setField("accom_first_name")}
             middleValue={form.accom_middle_name}
-            middleOnChange={set("accom_middle_name")}
+            middleOnChange={setField("accom_middle_name")}
           />
         </View>
 
@@ -1240,26 +1274,28 @@ export default function ApplyScreen() {
           <InputField
             label="Name of Certifying Physician"
             value={form.certifying_physician_name}
-            onChange={set("certifying_physician_name")}
+            onChange={setField("certifying_physician_name")}
             placeholder="Full name of physician"
           />
           <InputField
             label="License No."
             value={form.certifying_physician_license_no}
-            onChange={set("certifying_physician_license_no")}
+            onChange={setField("certifying_physician_license_no")}
             placeholder="License number"
           />
         </View>
 
-        {/* ── Submit Button ── */}
+        {/* ── Submit ── */}
         <Pressable
           onPress={handleSubmit}
           disabled={submitting}
-          className={`bg-green-700 py-4 rounded-2xl flex-row items-center justify-center gap-2.5 ${
-            submitting ? "opacity-60" : ""
-          }`}
+          className={`bg-green-700 py-4 rounded-2xl flex-row items-center justify-center gap-2.5 ${submitting ? "opacity-60" : ""}`}
         >
-          {submitting ? <ActivityIndicator size="small" /> : <Send size={18} />}
+          {submitting ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Send size={18} color="#fff" />
+          )}
           <Text className="text-white font-bold text-base">
             {submitting ? "Submitting…" : "Submit Application"}
           </Text>

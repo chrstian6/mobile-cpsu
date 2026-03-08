@@ -3,7 +3,7 @@ import axios from "axios";
 import * as SecureStore from "expo-secure-store";
 
 // ── Change this to your machine's local IP when testing on a device ──
-export const BASE_URL = "http://10.148.146.181:3000/api"; // <-- update this
+export const BASE_URL = "http://192.168.254.124:3000/api"; // <-- update this
 
 export const JWT_ACCESS_TOKEN_KEY = "pdao_access_token";
 export const JWT_REFRESH_TOKEN_KEY = "pdao_refresh_token";

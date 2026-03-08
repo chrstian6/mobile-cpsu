@@ -1,4 +1,4 @@
-// backend/src/index.ts  (or server.ts)
+// backend/src/server.ts
 import cors from "cors";
 import dotenv from "dotenv";
 import express, { NextFunction, Request, Response } from "express";
@@ -12,6 +12,7 @@ dotenv.config({ path: path.join(__dirname, "../.env") });
 import applicationRoutes from "./routes/applications";
 import authRoutes from "./routes/auth";
 import cardRoutes from "./routes/cards";
+import cashAssistanceRoutes from "./routes/cash-assistance"; // ← NEW
 import facapiWebviewRoutes from "./routes/faceapi-webview";
 import ocrRoutes from "./routes/ocr";
 import testRouter from "./routes/test";
@@ -39,7 +40,6 @@ app.use(
     credentials: false,
   }),
 );
-
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
@@ -53,7 +53,8 @@ app.use(
 app.use("/api/auth", authRoutes);
 app.use("/api/cards", cardRoutes);
 app.use("/api/ocr", ocrRoutes);
-app.use("/api/applications", applicationRoutes); // ← NEW
+app.use("/api/applications", applicationRoutes);
+app.use("/api/cash-assistance", cashAssistanceRoutes); // ← NEW
 app.use("/faceapi-webview", facapiWebviewRoutes);
 app.use("/api/test", testRouter);
 
