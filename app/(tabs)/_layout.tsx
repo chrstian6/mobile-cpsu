@@ -2,10 +2,12 @@
 import { useAuthStore } from "@/stores/auth";
 import { Tabs } from "expo-router";
 import { Home, IdCard, LayoutGrid } from "lucide-react-native";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, Platform, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function TabsLayout() {
   const { user, isLoading } = useAuthStore();
+  const insets = useSafeAreaInsets();
 
   // Show loading while checking auth
   if (isLoading) {
@@ -37,13 +39,24 @@ export default function TabsLayout() {
         tabBarStyle: {
           borderTopWidth: 1,
           borderTopColor: "#f3f4f6",
-          height: 60,
-          paddingBottom: 8,
+          height: 70, // Fixed height
+          paddingBottom: Platform.OS === "android" ? 12 : 8, // Extra padding for Android
           paddingTop: 8,
+          backgroundColor: "white",
+          position: "absolute", // Make it absolute positioned
+          bottom: 0,
+          left: 0,
+          right: 0,
+          elevation: 8, // Android shadow
+          shadowColor: "#000", // iOS shadow
+          shadowOffset: { width: 0, height: -2 },
+          shadowOpacity: 0.05,
+          shadowRadius: 4,
         },
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "500",
+          marginBottom: 4,
         },
         headerShown: false,
       }}

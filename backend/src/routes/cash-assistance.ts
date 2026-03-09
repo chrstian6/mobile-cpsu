@@ -1,4 +1,4 @@
-// backend/src/routes/cashAssistance.ts
+// backend/src/routes/cash-assistance.ts
 import { Response, Router } from "express";
 import mongoose from "mongoose";
 import { ZodError } from "zod";
@@ -27,7 +27,7 @@ router.post("/", requireAuth, async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ message: "Unauthorized." });
     }
 
-    // ✅ Zod validation
+    // ✅ Zod validation - now medical certificate is required
     const parsed = CreateCashAssistanceSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({
@@ -38,26 +38,33 @@ router.post("/", requireAuth, async (req: AuthRequest, res: Response) => {
 
     const { purpose, date_needed, medical_certificate_base64 } = parsed.data;
 
-    // Upload certificate to dedicated bucket
-    let medical_certificate_url: string | null = null;
-    if (medical_certificate_base64) {
-      try {
-        const filePath = `${user_id}/${Date.now()}_medical_cert`;
-        medical_certificate_url = await uploadBase64ToSupabase(
-          medical_certificate_base64,
-          filePath,
-          BUCKETS.MEDICAL_CERTIFICATES,
-        );
-        console.log(
-          "[cash-assistance] Certificate uploaded:",
-          medical_certificate_url,
-        );
-      } catch (uploadErr: any) {
-        console.error(
-          "[cash-assistance] Certificate upload failed:",
-          uploadErr.message,
-        );
+    // Upload certificate to dedicated bucket - now guaranteed to exist
+    let medical_certificate_url: string;
+    try {
+      const filePath = `${user_id}/${Date.now()}_medical_cert`;
+      const uploadedUrl = await uploadBase64ToSupabase(
+        medical_certificate_base64,
+        filePath,
+        BUCKETS.MEDICAL_CERTIFICATES,
+      );
+
+      if (!uploadedUrl) {
+        throw new Error("Failed to upload certificate - no URL returned");
       }
+
+      medical_certificate_url = uploadedUrl;
+      console.log(
+        "[cash-assistance] Certificate uploaded:",
+        medical_certificate_url,
+      );
+    } catch (uploadErr: any) {
+      console.error(
+        "[cash-assistance] Certificate upload failed:",
+        uploadErr.message,
+      );
+      return res.status(500).json({
+        message: "Failed to upload medical certificate. Please try again.",
+      });
     }
 
     const record = new CashAssistance({
@@ -159,7 +166,7 @@ router.patch(
 
       if (!record) return res.status(404).json({ message: "Not found." });
 
-      if (record.status !== "Submitted") {
+      if (record.status !== "Submitted" && record.status !== "Under Review") {
         return res.status(400).json({
           message: `Cannot cancel a request with status "${record.status}".`,
         });

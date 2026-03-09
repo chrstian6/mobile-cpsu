@@ -39,6 +39,15 @@ function RootLayoutNav() {
         name="face-verification-web"
         options={{ headerShown: false }}
       />
+      {/* Add screens folder routes */}
+      <Stack.Screen
+        name="screens/application"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="screens/financial-assistance"
+        options={{ headerShown: false }}
+      />
     </Stack>
   );
 }

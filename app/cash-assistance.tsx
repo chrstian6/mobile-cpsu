@@ -13,8 +13,9 @@ import {
   ChevronRight,
   FileText,
   ImagePlus,
+  XCircle,
 } from "lucide-react-native";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -34,6 +35,12 @@ const EXPRESS_API_BASE =
 
 type SubmitState = "idle" | "submitting" | "success";
 
+type FieldErrors = {
+  purpose?: string;
+  date_needed?: string;
+  medical_certificate?: string;
+};
+
 export default function CashAssistanceScreen() {
   const [purpose, setPurpose] = useState("");
   const [dateNeeded, setDateNeeded] = useState<Date | null>(null);
@@ -46,6 +53,82 @@ export default function CashAssistanceScreen() {
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [submittedFormId, setSubmittedFormId] = useState<string | null>(null);
+
+  // Validation states
+  const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [isFormValid, setIsFormValid] = useState(false);
+
+  // Validation functions
+  const validatePurpose = (value: string): string | undefined => {
+    if (!value.trim()) {
+      return "Purpose is required.";
+    }
+    if (value.trim().length < 10) {
+      return "Purpose must be at least 10 characters.";
+    }
+    if (value.trim().length > 1000) {
+      return "Purpose must not exceed 1000 characters.";
+    }
+    return undefined;
+  };
+
+  const validateDateNeeded = (date: Date | null): string | undefined => {
+    if (!date) {
+      return "Date needed is required.";
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const selectedDate = new Date(date);
+    selectedDate.setHours(0, 0, 0, 0);
+
+    if (selectedDate <= today) {
+      return "Date needed must be a future date.";
+    }
+    return undefined;
+  };
+
+  const validateMedicalCertificate = (
+    base64: string | null,
+  ): string | undefined => {
+    if (!base64) {
+      return "Medical certificate is required.";
+    }
+    const isValid =
+      /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(base64);
+    if (!isValid) {
+      return "Medical certificate must be a valid image (JPEG, PNG, or WEBP).";
+    }
+    return undefined;
+  };
+
+  // Run validation when fields change
+  useEffect(() => {
+    const errors: FieldErrors = {};
+
+    errors.purpose = validatePurpose(purpose);
+    errors.date_needed = validateDateNeeded(dateNeeded);
+    errors.medical_certificate = validateMedicalCertificate(certificateBase64);
+
+    // Remove undefined errors
+    Object.keys(errors).forEach((key) => {
+      if (errors[key as keyof FieldErrors] === undefined) {
+        delete errors[key as keyof FieldErrors];
+      }
+    });
+
+    setFieldErrors(errors);
+    setIsFormValid(Object.keys(errors).length === 0);
+  }, [purpose, dateNeeded, certificateBase64]);
+
+  const handleFieldBlur = (fieldName: string) => {
+    setFocusedField(null);
+    setTouchedFields((prev) => new Set(prev).add(fieldName));
+  };
+
+  const getFieldError = (fieldName: keyof FieldErrors): string | undefined => {
+    return touchedFields.has(fieldName) ? fieldErrors[fieldName] : undefined;
+  };
 
   const formatDate = (d: Date) =>
     d.toLocaleDateString("en-PH", {
@@ -75,11 +158,15 @@ export default function CashAssistanceScreen() {
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
           quality: 0.7,
           base64: true,
+          allowsEditing: true,
+          aspect: [4, 3],
         })
       : await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
           quality: 0.7,
           base64: true,
+          allowsEditing: true,
+          aspect: [4, 3],
         });
 
     if (!result.canceled && result.assets[0]) {
@@ -88,33 +175,41 @@ export default function CashAssistanceScreen() {
       // Build proper base64 data URI
       const mime = asset.mimeType ?? "image/jpeg";
       setCertificateBase64(`data:${mime};base64,${asset.base64}`);
+      setTouchedFields((prev) => new Set(prev).add("medical_certificate"));
     }
   };
 
   const showImageOptions = () => {
-    Alert.alert("Medical Certificate", "Choose an option", [
+    Alert.alert("Medical Certificate", "Upload your medical certificate", [
       { text: "Take Photo", onPress: () => handlePickImage(true) },
       { text: "Upload from Library", onPress: () => handlePickImage(false) },
       { text: "Cancel", style: "cancel" },
     ]);
   };
 
+  const handleRemoveCertificate = () => {
+    setCertificateUri(null);
+    setCertificateBase64(null);
+    setTouchedFields((prev) => new Set(prev).add("medical_certificate"));
+  };
+
   const handleSubmit = async () => {
+    // Mark all fields as touched to show all validation errors
+    setTouchedFields(
+      new Set(["purpose", "date_needed", "medical_certificate"]),
+    );
+
+    // Final validation check
+    const purposeError = validatePurpose(purpose);
+    const dateError = validateDateNeeded(dateNeeded);
+    const certError = validateMedicalCertificate(certificateBase64);
+
+    if (purposeError || dateError || certError) {
+      setError("Please fix all errors before submitting.");
+      return;
+    }
+
     setError(null);
-
-    if (!purpose.trim()) {
-      setError("Please describe the purpose of your request.");
-      return;
-    }
-    if (!dateNeeded) {
-      setError("Please select the date you need the assistance.");
-      return;
-    }
-    if (dateNeeded <= new Date()) {
-      setError("Date needed must be in the future.");
-      return;
-    }
-
     setSubmitState("submitting");
 
     try {
@@ -133,15 +228,30 @@ export default function CashAssistanceScreen() {
         },
         body: JSON.stringify({
           purpose: purpose.trim(),
-          date_needed: dateNeeded.toISOString(),
-          medical_certificate_base64: certificateBase64 ?? undefined,
+          date_needed: dateNeeded!.toISOString(),
+          medical_certificate_base64: certificateBase64,
         }),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
-        setError(data.message ?? "Submission failed. Please try again.");
+        // Handle backend validation errors
+        if (data.errors) {
+          // If backend returns field-specific errors
+          const backendErrors: FieldErrors = {};
+          if (Array.isArray(data.errors)) {
+            data.errors.forEach((err: any) => {
+              if (err.field) {
+                backendErrors[err.field as keyof FieldErrors] = err.message;
+              }
+            });
+          }
+          setFieldErrors(backendErrors);
+          setError("Please check the form for errors.");
+        } else {
+          setError(data.message ?? "Submission failed. Please try again.");
+        }
         setSubmitState("idle");
         return;
       }
@@ -233,13 +343,13 @@ export default function CashAssistanceScreen() {
           <View className="mx-5 mt-5 bg-blue-50 border border-blue-100 rounded-2xl p-4 flex-row gap-3">
             <FileText size={18} color="#2563EB" strokeWidth={2} />
             <Text className="text-blue-700 text-[13px] leading-5 flex-1">
-              Fill out the form below to submit a cash assistance request to the
-              PDAO office. You will be notified once your request is reviewed.
+              Fill out the form below to submit a cash assistance request. A
+              medical certificate is required for processing.
             </Text>
           </View>
 
           <View className="px-5 mt-6 gap-y-5">
-            {/* Error */}
+            {/* General Error */}
             {error && (
               <View className="flex-row items-center gap-2 bg-red-50 border border-red-200 rounded-2xl px-4 py-3">
                 <AlertCircle size={16} color="#dc2626" strokeWidth={2} />
@@ -251,14 +361,25 @@ export default function CashAssistanceScreen() {
 
             {/* Purpose */}
             <View>
-              <Text className="text-gray-700 text-[13px] font-bold mb-2">
-                Purpose <Text className="text-red-400 font-normal">*</Text>
-              </Text>
+              <View className="flex-row justify-between items-center mb-2">
+                <Text className="text-gray-700 text-[13px] font-bold">
+                  Purpose <Text className="text-red-400">*</Text>
+                </Text>
+                {purpose.length > 0 && (
+                  <Text
+                    className={`text-[11px] ${purpose.length >= 10 ? "text-green-600" : "text-amber-500"}`}
+                  >
+                    {purpose.length}/10 min
+                  </Text>
+                )}
+              </View>
               <TextInput
                 className={`w-full px-4 text-[14px] text-gray-900 rounded-2xl border ${
                   focusedField === "purpose"
                     ? "bg-green-50 border-green-600"
-                    : "bg-gray-50 border-gray-200"
+                    : getFieldError("purpose")
+                      ? "bg-red-50 border-red-300"
+                      : "bg-gray-50 border-gray-200"
                 }`}
                 style={{
                   paddingVertical: 14,
@@ -270,45 +391,49 @@ export default function CashAssistanceScreen() {
                 value={purpose}
                 onChangeText={setPurpose}
                 onFocus={() => setFocusedField("purpose")}
-                onBlur={() => setFocusedField(null)}
+                onBlur={() => handleFieldBlur("purpose")}
                 multiline
+                textAlignVertical="top"
                 returnKeyType="default"
               />
+              {getFieldError("purpose") && (
+                <View className="flex-row items-center gap-1 mt-1.5 ml-1">
+                  <XCircle size={12} color="#dc2626" />
+                  <Text className="text-red-600 text-[11px] flex-1">
+                    {getFieldError("purpose")}
+                  </Text>
+                </View>
+              )}
             </View>
 
-            {/* Medical Certificate */}
+            {/* Medical Certificate - NOW REQUIRED */}
             <View>
               <Text className="text-gray-700 text-[13px] font-bold mb-2">
-                Medical Certificate{" "}
-                <Text className="text-gray-400 font-normal text-[12px]">
-                  (optional)
-                </Text>
+                Medical Certificate <Text className="text-red-400">*</Text>
               </Text>
+
               {certificateUri ? (
                 <View className="rounded-2xl overflow-hidden border border-gray-200">
                   <Image
                     source={{ uri: certificateUri }}
-                    style={{ width: "100%", height: 180 }}
+                    style={{ width: "100%", height: 200 }}
                     resizeMode="cover"
                   />
-                  <View className="flex-row">
+                  <View className="flex-row border-t border-gray-200">
                     <Pressable
                       onPress={showImageOptions}
-                      className="flex-1 bg-gray-50 py-3 items-center border-t border-gray-200"
+                      className="flex-1 bg-gray-50 py-3 items-center active:bg-gray-100"
                     >
-                      <Text className="text-gray-600 text-[13px] font-semibold">
+                      <Text className="text-gray-700 text-[13px] font-semibold">
                         Replace
                       </Text>
                     </Pressable>
                     <View className="w-px bg-gray-200" />
                     <Pressable
-                      onPress={() => {
-                        setCertificateUri(null);
-                        setCertificateBase64(null);
-                      }}
-                      className="flex-1 bg-gray-50 py-3 items-center border-t border-gray-200"
+                      onPress={handleRemoveCertificate}
+                      className="flex-1 bg-gray-50 py-3 items-center active:bg-gray-100"
                     >
-                      <Text className="text-red-500 text-[13px] font-semibold">
+                      <Text className="text-red-600 text-[13px] font-semibold">
                         Remove
                       </Text>
                     </Pressable>
@@ -317,40 +442,88 @@ export default function CashAssistanceScreen() {
               ) : (
                 <Pressable
                   onPress={showImageOptions}
-                  className="bg-gray-50 border-2 border-dashed border-gray-200 rounded-2xl py-8 items-center gap-3"
+                  className={`border-2 border-dashed rounded-2xl py-8 items-center gap-3 ${
+                    getFieldError("medical_certificate")
+                      ? "bg-red-50 border-red-300"
+                      : "bg-gray-50 border-gray-200"
+                  }`}
                 >
-                  <View className="w-12 h-12 bg-gray-100 rounded-xl items-center justify-center">
-                    <ImagePlus size={22} color="#9ca3af" strokeWidth={1.5} />
+                  <View
+                    className={`w-16 h-16 rounded-2xl items-center justify-center ${
+                      getFieldError("medical_certificate")
+                        ? "bg-red-100"
+                        : "bg-white"
+                    }`}
+                  >
+                    <ImagePlus
+                      size={28}
+                      color={
+                        getFieldError("medical_certificate")
+                          ? "#dc2626"
+                          : "#9ca3af"
+                      }
+                      strokeWidth={1.5}
+                    />
                   </View>
-                  <View className="items-center">
-                    <Text className="text-gray-700 text-[13px] font-semibold">
+                  <View className="items-center px-4">
+                    <Text
+                      className={`text-[15px] font-semibold mb-1 ${
+                        getFieldError("medical_certificate")
+                          ? "text-red-600"
+                          : "text-gray-700"
+                      }`}
+                    >
                       Upload Medical Certificate
                     </Text>
-                    <Text className="text-gray-400 text-[12px] mt-1">
-                      Take a photo or choose from library
+                    <Text
+                      className={`text-[12px] text-center ${
+                        getFieldError("medical_certificate")
+                          ? "text-red-400"
+                          : "text-gray-400"
+                      }`}
+                    >
+                      Take a photo or choose from library{"\n"}
+                      (JPEG, PNG, or WEBP)
                     </Text>
                   </View>
                 </Pressable>
+              )}
+
+              {getFieldError("medical_certificate") && (
+                <View className="flex-row items-center gap-1 mt-1.5 ml-1">
+                  <XCircle size={12} color="#dc2626" />
+                  <Text className="text-red-600 text-[11px] flex-1">
+                    {getFieldError("medical_certificate")}
+                  </Text>
+                </View>
               )}
             </View>
 
             {/* Date Needed */}
             <View>
               <Text className="text-gray-700 text-[13px] font-bold mb-2">
-                Date Needed <Text className="text-red-400 font-normal">*</Text>
+                Date Needed <Text className="text-red-400">*</Text>
               </Text>
               <Pressable
                 onPress={() => setShowDatePicker(true)}
                 className={`flex-row items-center px-4 rounded-2xl border gap-3 ${
                   showDatePicker
                     ? "bg-green-50 border-green-600"
-                    : "bg-gray-50 border-gray-200"
+                    : getFieldError("date_needed")
+                      ? "bg-red-50 border-red-300"
+                      : "bg-gray-50 border-gray-200"
                 }`}
                 style={{ paddingVertical: 14 }}
               >
                 <Calendar
                   size={18}
-                  color={dateNeeded ? "#166534" : "#9ca3af"}
+                  color={
+                    getFieldError("date_needed")
+                      ? "#dc2626"
+                      : dateNeeded
+                        ? "#166534"
+                        : "#9ca3af"
+                  }
                   strokeWidth={2}
                 />
                 <Text
@@ -363,6 +536,15 @@ export default function CashAssistanceScreen() {
                 <ChevronRight size={16} color="#d1d5db" />
               </Pressable>
 
+              {getFieldError("date_needed") && (
+                <View className="flex-row items-center gap-1 mt-1.5 ml-1">
+                  <XCircle size={12} color="#dc2626" />
+                  <Text className="text-red-600 text-[11px] flex-1">
+                    {getFieldError("date_needed")}
+                  </Text>
+                </View>
+              )}
+
               {showDatePicker && (
                 <DateTimePicker
                   value={dateNeeded ?? new Date()}
@@ -370,8 +552,15 @@ export default function CashAssistanceScreen() {
                   display={Platform.OS === "ios" ? "spinner" : "default"}
                   minimumDate={new Date(Date.now() + 86400000)} // tomorrow
                   onChange={(_, selected) => {
-                    setShowDatePicker(Platform.OS === "ios");
-                    if (selected) setDateNeeded(selected);
+                    if (Platform.OS === "android") {
+                      setShowDatePicker(false);
+                    }
+                    if (selected) {
+                      setDateNeeded(selected);
+                      setTouchedFields((prev) =>
+                        new Set(prev).add("date_needed"),
+                      );
+                    }
                   }}
                 />
               )}
@@ -379,23 +568,46 @@ export default function CashAssistanceScreen() {
               {/* iOS confirm button */}
               {showDatePicker && Platform.OS === "ios" && (
                 <Pressable
-                  onPress={() => setShowDatePicker(false)}
-                  className="mt-2 bg-green-900 rounded-xl py-2.5 items-center"
+                  onPress={() => {
+                    setShowDatePicker(false);
+                    setTouchedFields((prev) =>
+                      new Set(prev).add("date_needed"),
+                    );
+                  }}
+                  className="mt-2 bg-green-900 rounded-xl py-3 items-center"
                 >
-                  <Text className="text-white text-[13px] font-bold">
+                  <Text className="text-white text-[14px] font-bold">
                     Confirm Date
                   </Text>
                 </Pressable>
               )}
             </View>
 
-            {/* Timestamp note */}
+            {/* Validation Summary */}
+            {Object.keys(fieldErrors).length > 0 && touchedFields.size > 0 && (
+              <View className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
+                <Text className="text-amber-800 text-[12px] font-semibold mb-2">
+                  Please fix the following:
+                </Text>
+                {Object.entries(fieldErrors).map(([field, message]) => (
+                  <View key={field} className="flex-row items-start gap-2 mb-1">
+                    <View className="w-1 h-1 rounded-full bg-amber-500 mt-2" />
+                    <Text className="text-amber-700 text-[11px] flex-1">
+                      {message}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Requirements note */}
             <View className="bg-gray-50 rounded-2xl px-4 py-3 border border-gray-100">
-              <Text className="text-gray-400 text-[12px] leading-5">
-                <Text className="font-semibold text-gray-500">Note: </Text>
-                Submission timestamp is recorded automatically. The PDAO office
-                will review your request and contact you within 3–5 business
-                days.
+              <Text className="text-gray-500 text-[12px] leading-5">
+                <Text className="font-semibold text-gray-600">
+                  Requirements:{" "}
+                </Text>
+                • Medical certificate (required){"\n"}• Valid purpose
+                description{"\n"}• Future date needed
               </Text>
             </View>
           </View>
@@ -408,14 +620,16 @@ export default function CashAssistanceScreen() {
         >
           <Pressable
             onPress={handleSubmit}
-            disabled={submitState === "submitting"}
+            disabled={submitState === "submitting" || !isFormValid}
             className={`rounded-2xl py-4 flex-row items-center justify-center gap-2 ${
               submitState === "submitting"
                 ? "bg-green-700 opacity-75"
-                : "bg-green-900 active:bg-green-800"
+                : !isFormValid
+                  ? "bg-gray-400"
+                  : "bg-green-900 active:bg-green-800"
             }`}
             style={{
-              shadowColor: "#166534",
+              shadowColor: !isFormValid ? "#9ca3af" : "#166534",
               shadowOffset: { width: 0, height: 3 },
               shadowOpacity: 0.2,
               shadowRadius: 6,
@@ -432,9 +646,11 @@ export default function CashAssistanceScreen() {
             ) : (
               <>
                 <Text className="text-white text-[15px] font-bold tracking-wide">
-                  Submit Request
+                  {isFormValid ? "Submit Request" : "Complete all fields"}
                 </Text>
-                <ChevronRight size={18} color="#fff" strokeWidth={2.5} />
+                {isFormValid && (
+                  <ChevronRight size={18} color="#fff" strokeWidth={2.5} />
+                )}
               </>
             )}
           </Pressable>

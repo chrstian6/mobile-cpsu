@@ -14,7 +14,7 @@ export const CashAssistanceStatusEnum = z.enum([
 
 export type CashAssistanceStatus = z.infer<typeof CashAssistanceStatusEnum>;
 
-// Inbound POST body validation
+// Inbound POST body validation - MEDICAL CERTIFICATE IS NOW REQUIRED
 export const CreateCashAssistanceSchema = z.object({
   purpose: z
     .string({ error: "Purpose is required." })
@@ -32,12 +32,10 @@ export const CreateCashAssistanceSchema = z.object({
     }),
 
   medical_certificate_base64: z
-    .string()
-    .optional()
-    .nullable()
+    .string({ error: "Medical certificate is required." })
+    .min(1, "Medical certificate is required.")
     .refine(
       (val) => {
-        if (!val) return true;
         return /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(
           val,
         );
@@ -68,7 +66,7 @@ export interface ICashAssistance extends Document {
   form_id: string;
   user_id: mongoose.Types.ObjectId;
   purpose: string;
-  medical_certificate_url: string | null;
+  medical_certificate_url: string; // Now required (not nullable)
   date_needed: Date;
   status: CashAssistanceStatus;
   created_at: Date;
@@ -91,7 +89,7 @@ const CashAssistanceSchema = new Schema<ICashAssistance>(
       type: String,
       required: true,
       unique: true,
-      default: generateFormId, // runs before Mongoose validation
+      default: generateFormId,
     },
     user_id: {
       type: Schema.Types.ObjectId,
@@ -107,7 +105,7 @@ const CashAssistanceSchema = new Schema<ICashAssistance>(
     },
     medical_certificate_url: {
       type: String,
-      default: null,
+      required: true, // Now required
     },
     date_needed: {
       type: Date,
