@@ -1,12 +1,11 @@
 // app/(tabs)/id.tsx
 import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
-import { useAuthStore } from "@/stores/auth"; // Change this import
+import { useAuthStore } from "@/stores/auth";
 import { useRouter } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import {
   AlertCircle,
   Calendar,
-  Camera,
   FileText,
   Heart,
   MapPin,
@@ -155,6 +154,9 @@ function UnderlineRow({
 // ─── Card Front ───────────────────────────────────────────────────────────
 
 function CardFront({ data }: { data: CardData }) {
+  // Use id_image_url for the photo (1x1 photo)
+  const photoUrl = data.id_image_url || data.face_image_url || null;
+
   return (
     <View
       className="w-full overflow-hidden rounded-2xl shadow-2xl"
@@ -226,9 +228,9 @@ function CardFront({ data }: { data: CardData }) {
             className="shrink-0 bg-gray-200 border border-gray-400 overflow-hidden rounded-sm shadow-md"
             style={{ width: "22%", aspectRatio: 1 }}
           >
-            {data.face_image_url || data.id_image_url ? (
+            {photoUrl ? (
               <Image
-                source={{ uri: data.face_image_url || data.id_image_url || "" }}
+                source={{ uri: photoUrl }}
                 className="w-full h-full"
                 resizeMode="cover"
               />
@@ -675,7 +677,7 @@ function FlipCard({ data }: { data: CardData }) {
 // ─── Main Screen ─────────────────────────────────────────────────────────
 
 export default function IDScreen() {
-  const { user } = useAuthStore(); // Updated to useAuthStore
+  const { user } = useAuthStore();
   const router = useRouter();
   const [card, setCard] = useState<CardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -751,10 +753,6 @@ export default function IDScreen() {
   useEffect(() => {
     fetchCard();
   }, [fetchCard]);
-
-  const handleScanQR = () => {
-    Alert.alert("Scan QR", "QR scanning feature coming soon!");
-  };
 
   const handleShare = () => {
     Alert.alert("Share", "Sharing feature coming soon!");
@@ -833,26 +831,19 @@ export default function IDScreen() {
           <FlipCard data={card} />
         </View>
 
-        {/* Action Buttons */}
+        {/* Action Buttons - Only Share button remains */}
         <View className="px-6 mt-6">
           <View className="flex-row gap-3">
             <Pressable
-              onPress={handleScanQR}
-              className="flex-1 bg-green-700 py-4 rounded-xl flex-row items-center justify-center gap-2"
+              onPress={handleShare}
+              className="flex-1 bg-white border border-green-200 py-4 rounded-xl flex-row items-center justify-center gap-2"
               style={{
                 shadowColor: "#166534",
                 shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.2,
+                shadowOpacity: 0.1,
                 shadowRadius: 4,
-                elevation: 3,
+                elevation: 2,
               }}
-            >
-              <Camera size={18} color="white" />
-              <Text className="text-white font-semibold">Scan QR</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleShare}
-              className="flex-1 bg-white border border-green-200 py-4 rounded-xl flex-row items-center justify-center gap-2"
             >
               <Share2 size={18} color="#166534" />
               <Text className="text-green-700 font-semibold">Share</Text>
@@ -888,7 +879,7 @@ export default function IDScreen() {
             </View>
 
             <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
-              <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
+              <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3" >
                 <Heart size={14} color="#166534" />
               </View>
               <Text className="text-gray-500 text-sm flex-1">
