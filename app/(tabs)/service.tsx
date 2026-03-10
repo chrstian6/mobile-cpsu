@@ -3,9 +3,12 @@ import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
 import { router } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import {
-  Award,
+  AlertCircle,
+  Calendar,
   ChevronRight,
+  CreditCard,
   FileText,
+  MapPin,
   RefreshCw,
   Search,
   UserPlus,
@@ -40,6 +43,29 @@ interface Application {
   created_at: string;
 }
 
+interface Card {
+  _id: string;
+  card_id: string;
+  name: string;
+  barangay: string;
+  type_of_disability: string;
+  address: string;
+  date_of_birth: string;
+  sex: string;
+  blood_type: string;
+  date_issued: string;
+  emergency_contact_name: string;
+  emergency_contact_number: string;
+  status: "Active" | "Expired" | "Revoked" | "Pending";
+  face_image_url: string | null;
+  id_front_url: string | null;
+  id_back_url: string | null;
+  id_image_url: string | null;
+  last_verified_at: string | null;
+  verification_count: number;
+  created_at: string;
+}
+
 const services = [
   {
     category: "Registration",
@@ -48,15 +74,9 @@ const services = [
         title: "New PWD Application",
         icon: UserPlus,
         description: "Apply for PWD registration and ID",
-        route: "pwd-application", // Custom handler will be used
+        route: "pwd-application",
         requiresAuth: true,
-        checkExisting: true, // Flag to check existing applications
-      },
-      {
-        title: "ID Application",
-        icon: Award,
-        description: "Apply for PWD ID only",
-        route: "/apply",
+        checkExisting: true,
       },
     ],
   },
@@ -101,11 +121,14 @@ export default function ServicesScreen() {
     {},
   );
   const [application, setApplication] = useState<Application | null>(null);
+  const [card, setCard] = useState<Card | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
+  const [checkingCard, setCheckingCard] = useState(false);
 
-  // Check for existing application on mount
+  // Check for existing application and card on mount
   useEffect(() => {
     checkExistingApplication();
+    checkExistingCard();
   }, []);
 
   const checkExistingApplication = async () => {
@@ -125,7 +148,6 @@ export default function ServicesScreen() {
         const apps = data.applications || [];
 
         // Find the most recent non-cancelled/non-rejected application
-        // Only one application per user is allowed
         const activeApp = apps.find(
           (app: Application) => !["Cancelled", "Rejected"].includes(app.status),
         );
@@ -136,6 +158,32 @@ export default function ServicesScreen() {
       console.error("[services] Error checking application:", err);
     } finally {
       setCheckingStatus(false);
+    }
+  };
+
+  const checkExistingCard = async () => {
+    try {
+      setCheckingCard(true);
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+      if (!token) return;
+
+      const res = await fetch(`${EXPRESS_API_BASE}/api/cards/me`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const cards = data.cards || [];
+
+        // Get the most recent card
+        setCard(cards[0] || null);
+      }
+    } catch (err) {
+      console.error("[services] Error checking card:", err);
+    } finally {
+      setCheckingCard(false);
     }
   };
 
@@ -164,7 +212,7 @@ export default function ServicesScreen() {
       const applications = data.applications || [];
 
       if (applications.length === 0) {
-        // No applications - show message
+        // No applications - prompt to create one
         Alert.alert(
           "No Applications Found",
           "You don't have any PWD applications yet. Would you like to create one?",
@@ -179,10 +227,8 @@ export default function ServicesScreen() {
         return;
       }
 
-      // Find the application (should only be one)
       const app = applications[0];
 
-      // Handle based on status
       switch (app.status) {
         case "Draft":
           Alert.alert(
@@ -208,7 +254,7 @@ export default function ServicesScreen() {
             `Your application (${app.application_id}) has been submitted and is waiting for review.`,
             [
               {
-                text: "OK",
+                text: "View Details",
                 onPress: () => router.push("/screens/application"),
               },
             ],
@@ -221,7 +267,7 @@ export default function ServicesScreen() {
             `Your application (${app.application_id}) is currently being reviewed by PDAO.`,
             [
               {
-                text: "OK",
+                text: "View Details",
                 onPress: () => router.push("/screens/application"),
               },
             ],
@@ -234,7 +280,7 @@ export default function ServicesScreen() {
             "Your application has been approved. You can now proceed with ID issuance.",
             [
               {
-                text: "OK",
+                text: "View Details",
                 onPress: () => router.push("/screens/application"),
               },
             ],
@@ -284,6 +330,29 @@ export default function ServicesScreen() {
     }
   };
 
+  const getCardStatusColor = (status: string) => {
+    switch (status) {
+      case "Active":
+        return "text-green-600 bg-green-50 border-green-200";
+      case "Pending":
+        return "text-yellow-600 bg-yellow-50 border-yellow-200";
+      case "Expired":
+        return "text-red-600 bg-red-50 border-red-200";
+      case "Revoked":
+        return "text-gray-600 bg-gray-50 border-gray-200";
+      default:
+        return "text-gray-600 bg-gray-50 border-gray-200";
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString("en-PH", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  };
+
   return (
     <SafeAreaView className="flex-1 bg-gray-50" edges={["top", "bottom"]}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -297,7 +366,7 @@ export default function ServicesScreen() {
           </View>
         </View>
 
-        {/* Application Status Banner - Show if there's an application */}
+        {/* Application Status Banner */}
         {!checkingStatus && (
           <>
             {application ? (
@@ -333,13 +402,121 @@ export default function ServicesScreen() {
           </>
         )}
 
-        {/* Loading state for status check */}
-        {checkingStatus && (
+        {/* Card Status Banner */}
+        {!checkingCard && card && (
+          <View className="px-6 mt-4">
+            <Pressable
+              onPress={() => router.push("/screens/id-details")}
+              className={`rounded-2xl p-4 border ${getCardStatusColor(card.status)}`}
+            >
+              <View className="flex-row items-center gap-3">
+                <View
+                  className={`w-10 h-10 rounded-xl items-center justify-center ${
+                    card.status === "Active"
+                      ? "bg-green-100"
+                      : card.status === "Pending"
+                        ? "bg-yellow-100"
+                        : card.status === "Expired"
+                          ? "bg-red-100"
+                          : "bg-gray-100"
+                  }`}
+                >
+                  <CreditCard
+                    size={20}
+                    color={
+                      card.status === "Active"
+                        ? "#059669"
+                        : card.status === "Pending"
+                          ? "#D97706"
+                          : card.status === "Expired"
+                            ? "#DC2626"
+                            : "#6B7280"
+                    }
+                  />
+                </View>
+                <View className="flex-1">
+                  <View className="flex-row items-center gap-2">
+                    <Text
+                      className="font-bold text-[14px]"
+                      style={{
+                        color:
+                          card.status === "Active"
+                            ? "#059669"
+                            : card.status === "Pending"
+                              ? "#D97706"
+                              : card.status === "Expired"
+                                ? "#DC2626"
+                                : "#6B7280",
+                      }}
+                    >
+                      PWD ID {card.status}
+                    </Text>
+                    <View
+                      className={`px-2 py-0.5 rounded-full ${
+                        card.status === "Active"
+                          ? "bg-green-100"
+                          : card.status === "Pending"
+                            ? "bg-yellow-100"
+                            : card.status === "Expired"
+                              ? "bg-red-100"
+                              : "bg-gray-100"
+                      }`}
+                    >
+                      <Text
+                        className={`text-[9px] font-semibold ${
+                          card.status === "Active"
+                            ? "text-green-700"
+                            : card.status === "Pending"
+                              ? "text-yellow-700"
+                              : card.status === "Expired"
+                                ? "text-red-700"
+                                : "text-gray-700"
+                        }`}
+                      >
+                        {card.status}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text className="text-gray-600 text-[12px] font-medium mt-0.5">
+                    {card.name}
+                  </Text>
+                  <View className="flex-row items-center gap-2 mt-1">
+                    <View className="flex-row items-center gap-1">
+                      <CreditCard size={10} color="#9ca3af" />
+                      <Text className="text-gray-400 text-[10px]">
+                        {card.card_id}
+                      </Text>
+                    </View>
+                    <View className="w-1 h-1 rounded-full bg-gray-300" />
+                    <View className="flex-row items-center gap-1">
+                      <MapPin size={10} color="#9ca3af" />
+                      <Text className="text-gray-400 text-[10px]">
+                        {card.barangay}
+                      </Text>
+                    </View>
+                  </View>
+                  {card.last_verified_at && (
+                    <View className="flex-row items-center gap-1 mt-1">
+                      <Calendar size={10} color="#9ca3af" />
+                      <Text className="text-gray-400 text-[9px]">
+                        Last verified: {formatDate(card.last_verified_at)}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <ChevronRight size={18} color="#9ca3af" />
+              </View>
+            </Pressable>
+          </View>
+        )}
+
+        {/* Loading states */}
+        {(checkingStatus || checkingCard) && (
           <View className="px-6 mt-4">
             <View className="bg-gray-50 border border-gray-200 rounded-2xl p-4 items-center">
               <ActivityIndicator size="small" color="#166534" />
               <Text className="text-gray-400 text-[12px] mt-2">
-                Checking application status...
+                Checking status...
               </Text>
             </View>
           </View>
@@ -395,12 +572,14 @@ export default function ServicesScreen() {
         {/* Info Footer */}
         <View className="px-6 pb-6">
           <View className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
-            <Text className="text-blue-700 text-[12px] leading-5">
-              <Text className="font-bold">Note: </Text>
-              Only one PWD application is allowed per user. If you have an
-              existing application, you can track its status or continue where
-              you left off.
-            </Text>
+            <View className="flex-row gap-2">
+              <AlertCircle size={16} color="#2563EB" />
+              <Text className="text-blue-700 text-[12px] leading-5 flex-1">
+                <Text className="font-bold">Note: </Text>
+                Only one PWD application is allowed per user. You can track your
+                application status and ID details here.
+              </Text>
+            </View>
           </View>
         </View>
       </ScrollView>
