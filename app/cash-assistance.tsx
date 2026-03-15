@@ -1,6 +1,5 @@
 // app/cash-assistance.tsx
 import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
-import DateTimePicker from "@react-native-community/datetimepicker";
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import * as SecureStore from "expo-secure-store";
@@ -8,7 +7,6 @@ import { StatusBar } from "expo-status-bar";
 import {
   AlertCircle,
   ArrowLeft,
-  Calendar,
   CheckCircle2,
   ChevronRight,
   FileText,
@@ -37,14 +35,11 @@ type SubmitState = "idle" | "submitting" | "success";
 
 type FieldErrors = {
   purpose?: string;
-  date_needed?: string;
   medical_certificate?: string;
 };
 
 export default function CashAssistanceScreen() {
   const [purpose, setPurpose] = useState("");
-  const [dateNeeded, setDateNeeded] = useState<Date | null>(null);
-  const [showDatePicker, setShowDatePicker] = useState(false);
   const [certificateUri, setCertificateUri] = useState<string | null>(null);
   const [certificateBase64, setCertificateBase64] = useState<string | null>(
     null,
@@ -73,21 +68,6 @@ export default function CashAssistanceScreen() {
     return undefined;
   };
 
-  const validateDateNeeded = (date: Date | null): string | undefined => {
-    if (!date) {
-      return "Date needed is required.";
-    }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const selectedDate = new Date(date);
-    selectedDate.setHours(0, 0, 0, 0);
-
-    if (selectedDate <= today) {
-      return "Date needed must be a future date.";
-    }
-    return undefined;
-  };
-
   const validateMedicalCertificate = (
     base64: string | null,
   ): string | undefined => {
@@ -107,7 +87,6 @@ export default function CashAssistanceScreen() {
     const errors: FieldErrors = {};
 
     errors.purpose = validatePurpose(purpose);
-    errors.date_needed = validateDateNeeded(dateNeeded);
     errors.medical_certificate = validateMedicalCertificate(certificateBase64);
 
     // Remove undefined errors
@@ -119,7 +98,7 @@ export default function CashAssistanceScreen() {
 
     setFieldErrors(errors);
     setIsFormValid(Object.keys(errors).length === 0);
-  }, [purpose, dateNeeded, certificateBase64]);
+  }, [purpose, certificateBase64]);
 
   const handleFieldBlur = (fieldName: string) => {
     setFocusedField(null);
@@ -129,14 +108,6 @@ export default function CashAssistanceScreen() {
   const getFieldError = (fieldName: keyof FieldErrors): string | undefined => {
     return touchedFields.has(fieldName) ? fieldErrors[fieldName] : undefined;
   };
-
-  const formatDate = (d: Date) =>
-    d.toLocaleDateString("en-PH", {
-      weekday: "short",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
 
   const handlePickImage = async (useCamera: boolean) => {
     const permission = useCamera
@@ -195,16 +166,13 @@ export default function CashAssistanceScreen() {
 
   const handleSubmit = async () => {
     // Mark all fields as touched to show all validation errors
-    setTouchedFields(
-      new Set(["purpose", "date_needed", "medical_certificate"]),
-    );
+    setTouchedFields(new Set(["purpose", "medical_certificate"]));
 
     // Final validation check
     const purposeError = validatePurpose(purpose);
-    const dateError = validateDateNeeded(dateNeeded);
     const certError = validateMedicalCertificate(certificateBase64);
 
-    if (purposeError || dateError || certError) {
+    if (purposeError || certError) {
       setError("Please fix all errors before submitting.");
       return;
     }
@@ -228,7 +196,6 @@ export default function CashAssistanceScreen() {
         },
         body: JSON.stringify({
           purpose: purpose.trim(),
-          date_needed: dateNeeded!.toISOString(),
           medical_certificate_base64: certificateBase64,
         }),
       });
@@ -499,90 +466,6 @@ export default function CashAssistanceScreen() {
               )}
             </View>
 
-            {/* Date Needed */}
-            <View>
-              <Text className="text-gray-700 text-[13px] font-bold mb-2">
-                Date Needed <Text className="text-red-400">*</Text>
-              </Text>
-              <Pressable
-                onPress={() => setShowDatePicker(true)}
-                className={`flex-row items-center px-4 rounded-2xl border gap-3 ${
-                  showDatePicker
-                    ? "bg-green-50 border-green-600"
-                    : getFieldError("date_needed")
-                      ? "bg-red-50 border-red-300"
-                      : "bg-gray-50 border-gray-200"
-                }`}
-                style={{ paddingVertical: 14 }}
-              >
-                <Calendar
-                  size={18}
-                  color={
-                    getFieldError("date_needed")
-                      ? "#dc2626"
-                      : dateNeeded
-                        ? "#166534"
-                        : "#9ca3af"
-                  }
-                  strokeWidth={2}
-                />
-                <Text
-                  className={`flex-1 text-[14px] ${
-                    dateNeeded ? "text-gray-900" : "text-gray-400"
-                  }`}
-                >
-                  {dateNeeded ? formatDate(dateNeeded) : "Select date…"}
-                </Text>
-                <ChevronRight size={16} color="#d1d5db" />
-              </Pressable>
-
-              {getFieldError("date_needed") && (
-                <View className="flex-row items-center gap-1 mt-1.5 ml-1">
-                  <XCircle size={12} color="#dc2626" />
-                  <Text className="text-red-600 text-[11px] flex-1">
-                    {getFieldError("date_needed")}
-                  </Text>
-                </View>
-              )}
-
-              {showDatePicker && (
-                <DateTimePicker
-                  value={dateNeeded ?? new Date()}
-                  mode="date"
-                  display={Platform.OS === "ios" ? "spinner" : "default"}
-                  minimumDate={new Date(Date.now() + 86400000)} // tomorrow
-                  onChange={(_, selected) => {
-                    if (Platform.OS === "android") {
-                      setShowDatePicker(false);
-                    }
-                    if (selected) {
-                      setDateNeeded(selected);
-                      setTouchedFields((prev) =>
-                        new Set(prev).add("date_needed"),
-                      );
-                    }
-                  }}
-                />
-              )}
-
-              {/* iOS confirm button */}
-              {showDatePicker && Platform.OS === "ios" && (
-                <Pressable
-                  onPress={() => {
-                    setShowDatePicker(false);
-                    setTouchedFields((prev) =>
-                      new Set(prev).add("date_needed"),
-                    );
-                  }}
-                  className="mt-2 bg-green-900 rounded-xl py-3 items-center"
-                >
-                  <Text className="text-white text-[14px] font-bold">
-                    Confirm Date
-                  </Text>
-                </Pressable>
-              )}
-            </View>
-
             {/* Validation Summary */}
             {Object.keys(fieldErrors).length > 0 && touchedFields.size > 0 && (
               <View className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
@@ -607,7 +490,7 @@ export default function CashAssistanceScreen() {
                   Requirements:{" "}
                 </Text>
                 • Medical certificate (required){"\n"}• Valid purpose
-                description{"\n"}• Future date needed
+                description (minimum 10 characters)
               </Text>
             </View>
           </View>

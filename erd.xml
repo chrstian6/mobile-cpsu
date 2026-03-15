@@ -1,0 +1,180 @@
+<mxfile host="app.diagrams.net" modified="2024-01-01T00:00:00.000Z" agent="Mozilla/5.0" version="21.6.5" etag="pwd-erd-v1" type="google">
+  <diagram name="PWD Assistance System" id="pwd-assistance-erd">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="826" background="#ffffff" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ==================== STYLES ==================== -->
+        <mxCell id="styles" style="html=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="0" y="0" width="0" height="0" as="geometry"/>
+        </mxCell>
+
+        <!-- Table Style -->
+        <mxCell id="tableStyle" style="html=1;whiteSpace=wrap;align=center;fillColor=#f5f5f5;fontStyle=1;strokeColor=#666666;rounded=1;shadow=1;" vertex="1" parent="styles">
+          <mxGeometry width="0" height="0" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== USERS TABLE ==================== -->
+        <mxCell id="users" value="&lt;b&gt;Users&lt;/b&gt;" style="html=1;whiteSpace=wrap;align=center;fillColor=#e1f5fe;fontStyle=1;strokeColor=#0288d1;rounded=1;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="240" height="360" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_pk" value="&lt;font color=&quot;#1e6b9c&quot;&gt;🔑 user_id: string (PDAO-...)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="users">
+          <mxGeometry y="30" width="240" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_attrs" value="├─ form_id: string?&lt;br&gt;├─ pwd_issued_id: string?&lt;br&gt;├─ card_id: string?&lt;br&gt;├─ first_name: string&lt;br&gt;├─ middle_name: string&lt;br&gt;├─ last_name: string&lt;br&gt;├─ suffix: string&lt;br&gt;├─ sex: enum&lt;br&gt;├─ age: number&lt;br&gt;├─ date_of_birth: date&lt;br&gt;├─ address: object (embedded)&lt;br&gt;├─ contact_number: string&lt;br&gt;├─ avatar_url: string?&lt;br&gt;├─ email: string&lt;br&gt;├─ password: string&lt;br&gt;├─ role: enum&lt;br&gt;├─ status: enum&lt;br&gt;├─ is_verified: boolean&lt;br&gt;├─ is_email_verified: boolean&lt;br&gt;├─ created_by: string?&lt;br&gt;├─ updated_by: string?&lt;br&gt;├─ created_at: date&lt;br&gt;├─ updated_at: date" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="users">
+          <mxGeometry y="50" width="240" height="310" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== APPLICATIONS TABLE ==================== -->
+        <mxCell id="applications" value="&lt;b&gt;Applications&lt;/b&gt;" style="html=1;whiteSpace=wrap;align=center;fillColor=#fff3e0;fontStyle=1;strokeColor=#f57c00;rounded=1;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="40" width="260" height="410" as="geometry"/>
+        </mxCell>
+        <mxCell id="apps_pk" value="&lt;font color=&quot;#1e6b9c&quot;&gt;🔑 application_id: string (APP-...)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="applications">
+          <mxGeometry y="30" width="260" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="apps_fk" value="&lt;font color=&quot;#b45f06&quot;&gt;🔗 user_id: string (FK → Users)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="applications">
+          <mxGeometry y="50" width="260" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="apps_attrs" value="├─ pwd_number: string?&lt;br&gt;├─ status: enum&lt;br&gt;├─ application_type: enum&lt;br&gt;├─ date_applied: date&lt;br&gt;├─ last_name: string&lt;br&gt;├─ first_name: string&lt;br&gt;├─ middle_name: string&lt;br&gt;├─ suffix: string&lt;br&gt;├─ date_of_birth: date&lt;br&gt;├─ sex: enum&lt;br&gt;├─ civil_status: enum&lt;br&gt;├─ types_of_disability: array&lt;br&gt;├─ causes_of_disability: array&lt;br&gt;├─ residence_address: object&lt;br&gt;├─ contact_details: object&lt;br&gt;├─ educational_attainment: string&lt;br&gt;├─ employment_status: string&lt;br&gt;├─ employment_category: string&lt;br&gt;├─ employment_type: string&lt;br&gt;├─ occupation: string&lt;br&gt;├─ occupation_others: string&lt;br&gt;├─ organization_info: object&lt;br&gt;├─ id_references: object&lt;br&gt;├─ family_background: object&lt;br&gt;├─ accomplished_by: object&lt;br&gt;├─ certifying_physician: string&lt;br&gt;├─ medical_certificate_url: string&lt;br&gt;├─ photo_1x1_url: string&lt;br&gt;├─ supporting_docs_urls: array&lt;br&gt;├─ processing_officer: string&lt;br&gt;├─ approving_officer: string&lt;br&gt;├─ encoder: string&lt;br&gt;├─ reporting_unit: string&lt;br&gt;├─ control_no: string&lt;br&gt;├─ reviewed_at: date&lt;br&gt;├─ reviewed_by: string&lt;br&gt;├─ rejection_reason: string&lt;br&gt;├─ admin_notes: string&lt;br&gt;├─ created_by: string&lt;br&gt;├─ updated_by: string&lt;br&gt;├─ created_at: date&lt;br&gt;├─ updated_at: date" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="applications">
+          <mxGeometry y="70" width="260" height="340" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== CARDS TABLE ==================== -->
+        <mxCell id="cards" value="&lt;b&gt;Cards&lt;/b&gt;" style="html=1;whiteSpace=wrap;align=center;fillColor=#e8f5e8;fontStyle=1;strokeColor=#388e3c;rounded=1;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="40" width="250" height="300" as="geometry"/>
+        </mxCell>
+        <mxCell id="cards_pk" value="&lt;font color=&quot;#1e6b9c&quot;&gt;🔑 _id: ObjectId&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="cards">
+          <mxGeometry y="30" width="250" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="cards_unique" value="&lt;font color=&quot;#b45f06&quot;&gt;🎫 card_id: string (unique, sparse)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="cards">
+          <mxGeometry y="50" width="250" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="cards_fk" value="&lt;font color=&quot;#b45f06&quot;&gt;🔗 user_id: string (FK → Users, unique)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="cards">
+          <mxGeometry y="70" width="250" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="cards_attrs" value="├─ name: string&lt;br&gt;├─ barangay: string&lt;br&gt;├─ type_of_disability: string&lt;br&gt;├─ address: string&lt;br&gt;├─ date_of_birth: date&lt;br&gt;├─ sex: string&lt;br&gt;├─ blood_type: string&lt;br&gt;├─ date_issued: date&lt;br&gt;├─ emergency_contact_name: string&lt;br&gt;├─ emergency_contact_number: string&lt;br&gt;├─ status: enum&lt;br&gt;├─ face_image_url: string&lt;br&gt;├─ face_descriptors: array&lt;br&gt;├─ id_front_url: string&lt;br&gt;├─ id_back_url: string&lt;br&gt;├─ id_image_url: string&lt;br&gt;├─ extracted_data: object&lt;br&gt;├─ last_verified_at: date&lt;br&gt;├─ verification_count: number&lt;br&gt;├─ created_by: string&lt;br&gt;├─ updated_by: string&lt;br&gt;├─ created_at: date&lt;br&gt;├─ updated_at: date" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="cards">
+          <mxGeometry y="90" width="250" height="210" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== REQUESTS TABLE ==================== -->
+        <mxCell id="requests" value="&lt;b&gt;Requests&lt;/b&gt;" style="html=1;whiteSpace=wrap;align=center;fillColor=#f3e5f5;fontStyle=1;strokeColor=#7b1fa2;rounded=1;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="480" width="270" height="410" as="geometry"/>
+        </mxCell>
+        <mxCell id="requests_pk" value="&lt;font color=&quot;#1e6b9c&quot;&gt;🔑 request_id: string (REQ-...)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="requests">
+          <mxGeometry y="30" width="270" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="requests_fk1" value="&lt;font color=&quot;#b45f06&quot;&gt;🔗 requester_id: string (FK → Users)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="requests">
+          <mxGeometry y="50" width="270" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="requests_attrs" value="├─ requester_name: string&lt;br&gt;├─ requester_barangay: string&lt;br&gt;├─ requester_contact: string&lt;br&gt;├─ items: array (embedded)&lt;br&gt;│  ├─ item_id: string&lt;br&gt;│  ├─ item_name: string&lt;br&gt;│  ├─ quantity: number&lt;br&gt;│  ├─ unit: string&lt;br&gt;│  ├─ requires_prescription: bool&lt;br&gt;│  ├─ prescription_image_url: str&lt;br&gt;│  ├─ prescription_verified: bool&lt;br&gt;│  └─ verified_by: string&lt;br&gt;├─ purpose: string&lt;br&gt;├─ queue_number: number&lt;br&gt;├─ queue_position: number&lt;br&gt;├─ estimated_wait_time: number&lt;br&gt;├─ status: enum&lt;br&gt;├─ priority: enum&lt;br&gt;├─ is_emergency: boolean&lt;br&gt;├─ emergency_notes: string&lt;br&gt;├─ has_prescription: boolean&lt;br&gt;├─ has_medical_cert: boolean&lt;br&gt;├─ has_barangay_cert: boolean&lt;br&gt;├─ prescription_images: array&lt;br&gt;├─ medical_certificate_url: str&lt;br&gt;├─ approved_items: array&lt;br&gt;├─ rejected_items: array&lt;br&gt;├─ rejection_reason: string&lt;br&gt;├─ processed_by: string&lt;br&gt;├─ processed_at: string&lt;br&gt;├─ approved_by: string&lt;br&gt;├─ approved_at: string&lt;br&gt;├─ distributed_by: string&lt;br&gt;├─ distributed_at: string&lt;br&gt;├─ notes: string&lt;br&gt;├─ created_by: string&lt;br&gt;├─ updated_by: string&lt;br&gt;├─ created_at: date&lt;br&gt;├─ updated_at: date" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="requests">
+          <mxGeometry y="70" width="270" height="340" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== ITEMS TABLE ==================== -->
+        <mxCell id="items" value="&lt;b&gt;Items&lt;/b&gt;" style="html=1;whiteSpace=wrap;align=center;fillColor=#ffebcc;fontStyle=1;strokeColor=#d95f00;rounded=1;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="390" y="480" width="250" height="320" as="geometry"/>
+        </mxCell>
+        <mxCell id="items_pk" value="&lt;font color=&quot;#1e6b9c&quot;&gt;🔑 item_id: string (ITEM-...)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="items">
+          <mxGeometry y="30" width="250" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="items_attrs" value="├─ item_image_url: string&lt;br&gt;├─ item_name: string&lt;br&gt;├─ item_description: string&lt;br&gt;├─ category: enum&lt;br&gt;├─ stock: number&lt;br&gt;├─ pending_requests: number&lt;br&gt;├─ reserved_stock: number&lt;br&gt;├─ unit: enum&lt;br&gt;├─ status: enum&lt;br&gt;├─ location: string&lt;br&gt;├─ expiry_date: string&lt;br&gt;├─ is_medical: boolean&lt;br&gt;├─ requires_prescription: boolean&lt;br&gt;├─ requires_med_cert: boolean&lt;br&gt;├─ requires_brgy_cert: boolean&lt;br&gt;├─ is_consumable: boolean&lt;br&gt;├─ needs_fitting: boolean&lt;br&gt;├─ size: string&lt;br&gt;├─ brand: string&lt;br&gt;├─ total_distributed: number&lt;br&gt;├─ last_distribution_date: str&lt;br&gt;├─ created_by: string&lt;br&gt;├─ updated_by: string&lt;br&gt;├─ created_at: date&lt;br&gt;├─ updated_at: date" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="items">
+          <mxGeometry y="50" width="250" height="270" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== CASH ASSISTANCE TABLE ==================== -->
+        <mxCell id="cash" value="&lt;b&gt;CashAssistance&lt;/b&gt;" style="html=1;whiteSpace=wrap;align=center;fillColor=#fce4e4;fontStyle=1;strokeColor=#c62828;rounded=1;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="400" width="240" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="cash_pk" value="&lt;font color=&quot;#1e6b9c&quot;&gt;🔑 form_id: string (CA-...)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="cash">
+          <mxGeometry y="30" width="240" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="cash_fk" value="&lt;font color=&quot;#b45f06&quot;&gt;🔗 user_id: string (FK → Users)&lt;/font&gt;" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="cash">
+          <mxGeometry y="50" width="240" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="cash_attrs" value="├─ purpose: string&lt;br&gt;├─ medical_certificate_url: string&lt;br&gt;├─ status: enum&lt;br&gt;├─ created_at: date&lt;br&gt;├─ updated_at: date" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;spacingLeft=10;" vertex="1" parent="cash">
+          <mxGeometry y="70" width="240" height="140" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== EMBEDDED ADDRESS STYLE (Reference) ==================== -->
+        <mxCell id="address_note" value="&lt;i&gt;Note: Address is embedded in Users as subdocument&lt;/i&gt;" style="html=1;whiteSpace=wrap;align=center;fontStyle=2;fillColor=#f9f9f9;strokeColor=#999999;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="920" width="260" height="30" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== RELATIONSHIPS ==================== -->
+
+        <!-- Users → Applications (One-to-Many) -->
+        <mxCell id="rel_users_apps" value="" style="endArrow=many;endFill=0;startArrow=classic;startFill=1;strokeWidth=2;strokeColor=#0288d1;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="users_pk" target="apps_fk">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="200" y="180"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="rel_users_apps_label" value="1 : N" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];strokeColor=none;fillColor=none;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="240" y="150" width="40" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Users → Cards (One-to-One) -->
+        <mxCell id="rel_users_cards" value="" style="endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=2;strokeColor=#388e3c;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="users_pk" target="cards_fk">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="500" y="150"/>
+              <mxPoint x="500" y="120"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="rel_users_cards_label" value="1 : 1" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];strokeColor=none;fillColor=none;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="430" y="90" width="40" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Users → Requests (One-to-Many) -->
+        <mxCell id="rel_users_requests" value="" style="endArrow=many;endFill=0;startArrow=classic;startFill=1;strokeWidth=2;strokeColor=#7b1fa2;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="users_pk" target="requests_fk1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="200" y="550"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="rel_users_requests_label" value="1 : N" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];strokeColor=none;fillColor=none;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="200" y="520" width="40" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Users → Cash Assistance (One-to-Many) -->
+        <mxCell id="rel_users_cash" value="" style="endArrow=classic;endFill=1;startArrow=classic;startFill=1;strokeWidth=2;strokeColor=#c62828;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="users_pk" target="cash_fk">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="540" y="420"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="rel_users_cash_label" value="1 : N" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];strokeColor=none;fillColor=none;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="460" y="380" width="40" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Items → Requests (Reference via items.item_id) -->
+        <mxCell id="rel_items_requests" value="" style="endArrow=open;endFill=0;startArrow=dash;startFill=0;strokeWidth=2;strokeColor=#d95f00;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" edge="1" parent="1" source="items_pk" target="requests">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="520" y="680" as="targetPoint"/>
+            <Array as="points">
+              <mxPoint x="520" y="680"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="rel_items_requests_label" value="Items referenced in Request.items[]" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];strokeColor=none;fillColor=none;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="420" y="640" width="160" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== LEGEND ==================== -->
+        <mxCell id="legend" value="&lt;b&gt;📋 LEGEND&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#1e6b9c&quot;&gt;🔑 Primary Key&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#b45f06&quot;&gt;🔗 Foreign Key&lt;/font&gt;&lt;br&gt;🎫 Unique Identifier&lt;br&gt;📦 Embedded Document&lt;br&gt;&lt;br&gt;&lt;b&gt;Relationships:&lt;/b&gt;&lt;br&gt;────── 1 : 1&lt;br&gt;────── 1 : N&lt;br&gt;- - - - Reference Only" style="html=1;whiteSpace=wrap;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#333333;rounded=1;shadow=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="970" width="200" height="200" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== TITLE ==================== -->
+        <mxCell id="title" value="&lt;b&gt;&lt;font size='16'&gt;PWD Assistance System - Entity Relationship Diagram&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;strokeColor=none;fillColor=none;fontSize=16;" vertex="1" connectable="0" parent="1">
+          <mxGeometry x="300" y="10" width="500" height="30" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

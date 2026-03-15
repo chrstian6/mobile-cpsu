@@ -1,3 +1,4 @@
+// types/auth.ts
 export type AuthUser = {
   _id: string;
   user_id: string;
@@ -19,6 +20,9 @@ export type AuthUser = {
     city_municipality?: string;
     province?: string;
     region?: string;
+    zip_code?: string;
+    country?: string;
+    type?: string;
   };
   created_at?: string;
 };
@@ -30,10 +34,25 @@ export type LoginPayload = {
 
 export type RegisterPayload = {
   first_name: string;
-  middle_name: string;
+  middle_name?: string; // Made optional
   last_name: string;
+  suffix?: string; // Made optional
+  sex: "Male" | "Female" | "Other";
+  date_of_birth: string;
+  contact_number: string;
   email: string;
   password: string;
+  address?: {
+    // Made optional
+    street?: string;
+    barangay?: string;
+    city_municipality?: string;
+    province?: string;
+    region?: string;
+    zip_code?: string;
+    country?: string;
+    type?: "Permanent" | "Temporary" | "Present";
+  };
 };
 
 export type AuthContextValue = {

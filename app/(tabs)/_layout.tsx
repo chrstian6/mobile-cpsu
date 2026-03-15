@@ -39,16 +39,24 @@ export default function TabsLayout() {
         tabBarStyle: {
           borderTopWidth: 1,
           borderTopColor: "#f3f4f6",
-          height: 70, // Fixed height
-          paddingBottom: Platform.OS === "android" ? 12 : 8, // Extra padding for Android
+          height: Platform.select({
+            ios: 70 + (insets.bottom > 0 ? insets.bottom - 10 : 0),
+            android: 70 + (insets.bottom > 0 ? insets.bottom : 0),
+            default: 70,
+          }),
+          paddingBottom: Platform.select({
+            ios: insets.bottom > 0 ? insets.bottom - 10 : 8,
+            android: insets.bottom > 0 ? insets.bottom : 12,
+            default: 8,
+          }),
           paddingTop: 8,
           backgroundColor: "white",
-          position: "absolute", // Make it absolute positioned
+          position: "absolute",
           bottom: 0,
           left: 0,
           right: 0,
-          elevation: 8, // Android shadow
-          shadowColor: "#000", // iOS shadow
+          elevation: 8,
+          shadowColor: "#000",
           shadowOffset: { width: 0, height: -2 },
           shadowOpacity: 0.05,
           shadowRadius: 4,

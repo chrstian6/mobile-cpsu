@@ -3,12 +3,27 @@ import { AuthProvider } from "@/providers/AuthProviders";
 import { useAuthStore } from "@/stores/auth";
 import { router, Stack } from "expo-router";
 import { useEffect, useRef } from "react";
+import { Alert } from "react-native";
 import "../global.css";
 
 function RootLayoutNav() {
-  const { user, isLoading } = useAuthStore();
+  const { user, isLoading, sessionExpired } = useAuthStore();
   const prevUserRef = useRef<typeof user | undefined>(undefined);
 
+  // Handle session expiration
+  useEffect(() => {
+    if (sessionExpired) {
+      // Show alert for session expiration
+      Alert.alert(
+        "Session Expired",
+        "Your session has expired. Please log in again.",
+        [{ text: "OK" }],
+      );
+      router.replace("/(auth)/login");
+    }
+  }, [sessionExpired]);
+
+  // Original navigation logic - completely preserved
   useEffect(() => {
     if (isLoading) return;
 
@@ -39,13 +54,21 @@ function RootLayoutNav() {
         name="face-verification-web"
         options={{ headerShown: false }}
       />
-      {/* Add screens folder routes */}
+      {/* Screens folder routes */}
       <Stack.Screen
         name="screens/application"
         options={{ headerShown: false }}
       />
       <Stack.Screen
         name="screens/financial-assistance"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="screens/id-details"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="screens/request-device"
         options={{ headerShown: false }}
       />
     </Stack>

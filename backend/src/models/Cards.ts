@@ -1,8 +1,8 @@
-// backend/src/models/Card.ts
+// backend/src/models/Cards.ts
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface ICard extends Document {
-  card_id: string;
+  card_id: string | null; // null until admin assigns the real PWD ID number
   user_id: string;
   name: string;
   barangay: string;
@@ -31,24 +31,49 @@ export interface ICard extends Document {
 
 const CardSchema = new Schema<ICard>(
   {
+    // card_id is assigned by the admin after review — null on initial request.
+    // sparse: true allows multiple documents to have null without violating the
+    // unique constraint (a normal unique index treats null as a duplicate).
     card_id: {
       type: String,
-      required: [true, "Card ID is required"],
+      required: false,
+      default: null,
       unique: true,
+      sparse: true,
       index: true,
-      match: [/^\d{2}-\d{4}-\d{3}-\d{7}$/, "Invalid Card ID format"],
+      trim: true,
     },
-    user_id: { type: String, required: true, index: true },
+    user_id: {
+      type: String,
+      required: true,
+      unique: true, // one card per user
+      index: true,
+    },
     name: { type: String, required: true, trim: true },
     barangay: { type: String, required: true, trim: true },
     type_of_disability: { type: String, required: true, trim: true },
     address: { type: String, required: true, trim: true },
     date_of_birth: { type: Date, required: true },
-    sex: { type: String, required: true, enum: ["Male", "Female", "Other"] },
+    sex: {
+      type: String,
+      required: true,
+      enum: ["Male", "Female", "Other", "Not detected"],
+    },
     blood_type: {
       type: String,
       required: true,
-      enum: ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "Unknown"],
+      enum: [
+        "A+",
+        "A-",
+        "B+",
+        "B-",
+        "AB+",
+        "AB-",
+        "O+",
+        "O-",
+        "Unknown",
+        "Not detected",
+      ],
     },
     date_issued: { type: Date, required: true, default: Date.now },
     emergency_contact_name: { type: String, required: true, trim: true },
@@ -78,7 +103,6 @@ const CardSchema = new Schema<ICard>(
   },
 );
 
-// Check if model exists before creating a new one (for Next.js hot reloading)
 const Card = mongoose.models.Card || mongoose.model<ICard>("Card", CardSchema);
 
 export default Card;

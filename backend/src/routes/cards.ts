@@ -2,6 +2,7 @@
 import { Response, Router } from "express";
 import multer from "multer";
 import { AuthRequest, requireAuth } from "../middleware/auth";
+import Application from "../models/Application";
 import Card from "../models/Cards";
 import User from "../models/User";
 import {
@@ -36,7 +37,6 @@ const parseDate = (val: string | undefined): Date | null => {
 // Simple sex mapper
 const mapSex = (sex: string | undefined): string => {
   if (!sex || sex === "Not detected") return "Not detected";
-
   const upperSex = sex.toUpperCase().trim();
   if (upperSex === "M") return "Male";
   if (upperSex === "F") return "Female";
@@ -44,7 +44,214 @@ const mapSex = (sex: string | undefined): string => {
   return sex;
 };
 
-// POST /api/cards
+// ── POST /api/cards/request-from-application ──────────────────────────────────
+// Called from application.tsx after a user's application is Approved.
+// Pulls personal data from the approved application, uploads the 1x1 photo,
+// and creates a Card record pending admin review.
+router.post(
+  "/request-from-application",
+  requireAuth,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const customUserId = req.userId;
+      if (!customUserId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      console.log("[cards/request-from-application] user:", customUserId);
+
+      const {
+        blood_type,
+        emergency_contact_name,
+        emergency_contact_number,
+        photo_base64,
+        face_verification_score,
+        face_verification_distance,
+      } = req.body;
+
+      // ── Validate required fields ────────────────────────────────────────────
+      if (!blood_type) {
+        res.status(400).json({ error: "Blood type is required" });
+        return;
+      }
+      if (!emergency_contact_name?.trim()) {
+        res.status(400).json({ error: "Emergency contact name is required" });
+        return;
+      }
+      if (!emergency_contact_number?.trim()) {
+        res.status(400).json({ error: "Emergency contact number is required" });
+        return;
+      }
+      if (!photo_base64) {
+        res.status(400).json({ error: "1x1 photo is required" });
+        return;
+      }
+      if (!photo_base64.startsWith("data:image/")) {
+        res
+          .status(400)
+          .json({ error: "Invalid photo format — must be a base64 data URI" });
+        return;
+      }
+
+      // ── Find the user's approved application ───────────────────────────────
+      const application = await Application.findOne({
+        user_id: customUserId,
+        status: "Approved",
+      }).sort({ created_at: -1 });
+
+      if (!application) {
+        res.status(404).json({
+          error: "No approved application found",
+          message:
+            "You must have an approved application before requesting a PWD ID card.",
+        });
+        return;
+      }
+
+      console.log(
+        "[cards/request-from-application] found application:",
+        application.application_id,
+      );
+
+      // ── Check if a card already exists for this user ────────────────────────
+      const existingCard = await Card.findOne({ user_id: customUserId });
+      if (existingCard) {
+        res.status(409).json({
+          error: "Card already requested",
+          message: "You already have a PWD ID card request in the system.",
+        });
+        return;
+      }
+
+      // ── Upload 1x1 photo to Supabase ────────────────────────────────────────
+      const sanitizedUserId = customUserId.replace(/[^a-zA-Z0-9\-]/g, "_");
+      const timestamp = Date.now();
+      const photoPath = `${sanitizedUserId}/1x1_photo_${timestamp}.jpg`;
+
+      console.log(
+        "[cards/request-from-application] uploading photo to:",
+        photoPath,
+      );
+
+      const photoUrl = await uploadBase64ToSupabase(photo_base64, photoPath);
+
+      if (!photoUrl) {
+        console.error("[cards/request-from-application] photo upload failed");
+        res
+          .status(500)
+          .json({ error: "Failed to upload photo. Please try again." });
+        return;
+      }
+
+      console.log("[cards/request-from-application] photo uploaded:", photoUrl);
+
+      // ── Build full name from application ────────────────────────────────────
+      const nameParts = [
+        application.first_name,
+        application.middle_name && application.middle_name !== "N/A"
+          ? application.middle_name
+          : null,
+        application.last_name,
+        application.suffix || null,
+      ].filter(Boolean);
+      const fullName = nameParts.join(" ");
+
+      // ── Build address from application residence_address ───────────────────
+      const addr = application.residence_address;
+      const addressStr = [
+        addr?.house_no_and_street,
+        addr?.barangay,
+        addr?.municipality,
+        addr?.province,
+        addr?.region,
+      ]
+        .filter(Boolean)
+        .join(", ");
+
+      // ── Generate a card_id placeholder (admin will assign the real one) ─────
+      // Format: PDAO-APP-{application_id}-{timestamp}
+      const generatedCardId = `PDAO-APP-${application.application_id}-${timestamp}`;
+
+      // ── Create the card ─────────────────────────────────────────────────────
+      const card = new Card({
+        card_id: generatedCardId,
+        user_id: customUserId,
+        name: fullName,
+        barangay: addr?.barangay || "Not detected",
+        type_of_disability:
+          application.types_of_disability?.join(", ") || "Not detected",
+        address: addressStr || "Not detected",
+        date_of_birth: application.date_of_birth,
+        sex: mapSex(application.sex),
+        blood_type,
+        date_issued: new Date(),
+        emergency_contact_name: emergency_contact_name.trim(),
+        emergency_contact_number: emergency_contact_number.trim(),
+        status: "Pending",
+        face_descriptors: null,
+        extracted_data: {
+          source: "application",
+          application_id: application.application_id,
+          face_verification_score: face_verification_score ?? null,
+          face_verification_distance: face_verification_distance ?? null,
+        },
+        id_front_url: null,
+        id_back_url: null,
+        id_image_url: photoUrl,
+        last_verified_at: new Date(),
+        verification_count: 1,
+        created_by: customUserId,
+      });
+
+      await card.save();
+      console.log("[cards/request-from-application] card saved:", card._id);
+
+      // ── Link card_id on the user record ────────────────────────────────────
+      await User.findOneAndUpdate(
+        { user_id: customUserId },
+        { card_id: generatedCardId, updated_by: customUserId },
+      );
+
+      console.log("[cards/request-from-application] user updated with card_id");
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Card request submitted successfully. The admin will review and issue your card.",
+        card: {
+          _id: card._id,
+          card_id: card.card_id,
+          name: card.name,
+          status: card.status,
+          blood_type: card.blood_type,
+          emergency_contact_name: card.emergency_contact_name,
+          emergency_contact_number: card.emergency_contact_number,
+          id_image_url: card.id_image_url,
+          created_at: card.created_at,
+        },
+      });
+    } catch (err: any) {
+      console.error("[POST /api/cards/request-from-application] Error:", err);
+
+      if (err.code === 11000) {
+        res.status(409).json({
+          error: "Card already requested",
+          message: "You already have a card request in the system.",
+        });
+        return;
+      }
+
+      res.status(500).json({
+        error: err?.message ?? "Failed to create card request",
+        details:
+          process.env.NODE_ENV === "development" ? err?.stack : undefined,
+      });
+    }
+  },
+);
+
+// ── POST /api/cards ───────────────────────────────────────────────────────────
 router.post(
   "/",
   requireAuth,
@@ -54,21 +261,14 @@ router.post(
   ]),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const mongoId = req.userId;
-      if (!mongoId) {
+      const customUserId = req.userId;
+      if (!customUserId) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
 
-      const userDoc = (await User.findById(mongoId).lean()) as any;
-      if (!userDoc) {
-        res.status(404).json({ error: "User not found" });
-        return;
-      }
-      const userId: string = userDoc.user_id || mongoId;
-
       console.log("=".repeat(50));
-      console.log("[cards] Processing card submission for user:", userId);
+      console.log("[cards] Processing card submission for user:", customUserId);
       console.log("=".repeat(50));
 
       const {
@@ -109,7 +309,6 @@ router.post(
         extracted_data = null;
       }
 
-      // Validate
       if (!card_id) {
         res.status(400).json({ error: "Card ID is required" });
         return;
@@ -135,13 +334,11 @@ router.post(
         return;
       }
 
-      // Upload images to Supabase
       const files = req.files as
         | Record<string, Express.Multer.File[]>
         | undefined;
-
       const sanitizedCardId = card_id.replace(/[^a-zA-Z0-9\-]/g, "_");
-      const sanitizedUserId = userId.replace(/[^a-zA-Z0-9\-]/g, "_");
+      const sanitizedUserId = customUserId.replace(/[^a-zA-Z0-9\-]/g, "_");
 
       console.log("\n[cards] ========== IMAGE UPLOAD DEBUG ==========");
       console.log("[cards] Content-Type:", req.headers["content-type"]);
@@ -149,98 +346,31 @@ router.post(
         "[cards] Files received:",
         files ? Object.keys(files) : "none",
       );
-      console.log(
-        "[cards] Body fields present:",
-        Object.keys(req.body).filter((k) => !k.includes("base64")),
-      );
-
-      // Debug front image
-      console.log("\n[cards] FRONT IMAGE DETAILS:");
-      if (files?.id_front?.[0]) {
-        const f = files.id_front[0];
-        console.log("  - From multipart: YES");
-        console.log("  - Size:", f.size, "bytes");
-        console.log("  - Mimetype:", f.mimetype);
-        console.log("  - Originalname:", f.originalname);
-        console.log("  - Buffer exists:", !!f.buffer);
-        console.log("  - Buffer length:", f.buffer?.length || 0);
-      } else {
-        console.log("  - From multipart: NO");
-      }
-
-      if (req.body.id_front_base64) {
-        console.log("  - From base64: YES");
-        console.log("  - Base64 length:", req.body.id_front_base64.length);
-        console.log(
-          "  - Base64 prefix:",
-          req.body.id_front_base64.substring(0, 50) + "...",
-        );
-
-        // Validate base64 format
-        const hasDataUri = req.body.id_front_base64.startsWith("data:image");
-        console.log("  - Has data URI prefix:", hasDataUri);
-      } else {
-        console.log("  - From base64: NO");
-      }
-
-      // Debug back image
-      console.log("\n[cards] BACK IMAGE DETAILS:");
-      if (files?.id_back?.[0]) {
-        const f = files.id_back[0];
-        console.log("  - From multipart: YES");
-        console.log("  - Size:", f.size, "bytes");
-        console.log("  - Mimetype:", f.mimetype);
-        console.log("  - Originalname:", f.originalname);
-        console.log("  - Buffer exists:", !!f.buffer);
-        console.log("  - Buffer length:", f.buffer?.length || 0);
-      } else {
-        console.log("  - From multipart: NO");
-      }
-
-      if (req.body.id_back_base64) {
-        console.log("  - From base64: YES");
-        console.log("  - Base64 length:", req.body.id_back_base64.length);
-
-        const hasDataUri = req.body.id_back_base64.startsWith("data:image");
-        console.log("  - Has data URI prefix:", hasDataUri);
-      } else {
-        console.log("  - From base64: NO");
-      }
 
       let idFrontUrl: string | null = null;
       let idBackUrl: string | null = null;
 
-      // Upload front image
       const frontPath = `${sanitizedUserId}/${sanitizedCardId}/id_front.jpg`;
       console.log("\n[cards] Uploading front image to:", frontPath);
 
       if (files?.id_front?.[0] && files.id_front[0].size > 0) {
         const f = files.id_front[0];
         console.log("[cards] Attempting multipart upload for front image...");
-        console.log("[cards] File size for upload:", f.size, "bytes");
-
         idFrontUrl = await uploadBufferToSupabase(
           f.buffer,
           f.mimetype,
           frontPath,
         );
-
         console.log(
           "[cards] Multipart upload result - front URL:",
           idFrontUrl || "FAILED",
         );
       } else if (req.body.id_front_base64) {
         console.log("[cards] Attempting base64 upload for front image...");
-        console.log(
-          "[cards] Base64 length for upload:",
-          req.body.id_front_base64.length,
-        );
-
         idFrontUrl = await uploadBase64ToSupabase(
           req.body.id_front_base64,
           frontPath,
         );
-
         console.log(
           "[cards] Base64 upload result - front URL:",
           idFrontUrl || "FAILED",
@@ -251,37 +381,27 @@ router.post(
         );
       }
 
-      // Upload back image
       const backPath = `${sanitizedUserId}/${sanitizedCardId}/id_back.jpg`;
       console.log("\n[cards] Uploading back image to:", backPath);
 
       if (files?.id_back?.[0] && files.id_back[0].size > 0) {
         const f = files.id_back[0];
         console.log("[cards] Attempting multipart upload for back image...");
-        console.log("[cards] File size for upload:", f.size, "bytes");
-
         idBackUrl = await uploadBufferToSupabase(
           f.buffer,
           f.mimetype,
           backPath,
         );
-
         console.log(
           "[cards] Multipart upload result - back URL:",
           idBackUrl || "FAILED",
         );
       } else if (req.body.id_back_base64) {
         console.log("[cards] Attempting base64 upload for back image...");
-        console.log(
-          "[cards] Base64 length for upload:",
-          req.body.id_back_base64.length,
-        );
-
         idBackUrl = await uploadBase64ToSupabase(
           req.body.id_back_base64,
           backPath,
         );
-
         console.log(
           "[cards] Base64 upload result - back URL:",
           idBackUrl || "FAILED",
@@ -293,14 +413,11 @@ router.post(
       console.log("\n[cards] ========== UPLOAD SUMMARY ==========");
       console.log("[cards] Front upload:", idFrontUrl ? "SUCCESS" : "FAILED");
       console.log("[cards] Back upload:", idBackUrl ? "SUCCESS" : "FAILED");
-      if (idFrontUrl) console.log("[cards] Front URL:", idFrontUrl);
-      if (idBackUrl) console.log("[cards] Back URL:", idBackUrl);
       console.log("[cards] ====================================\n");
 
-      // Save card with raw values
       const card = new Card({
         card_id,
-        user_id: userId,
+        user_id: customUserId,
         name,
         barangay: barangay || "Not detected",
         type_of_disability: type_of_disability || "Not detected",
@@ -316,19 +433,19 @@ router.post(
         extracted_data: extracted_data ?? null,
         id_front_url: idFrontUrl,
         id_back_url: idBackUrl,
-        id_image_url: null, // 1x1 photo starts as null, can be uploaded later
+        id_image_url: null,
         last_verified_at: new Date(),
         verification_count: 1,
-        created_by: userId,
+        created_by: customUserId,
       });
 
       await card.save();
       console.log("[cards] Card saved to database with ID:", card._id);
 
-      await User.findByIdAndUpdate(mongoId, {
-        card_id: card_id,
-        updated_by: userId,
-      });
+      await User.findOneAndUpdate(
+        { user_id: customUserId },
+        { card_id: card_id, updated_by: customUserId },
+      );
       console.log("[cards] User updated with card_id");
 
       console.log(
@@ -362,12 +479,6 @@ router.post(
       });
     } catch (err: any) {
       console.error("[POST /api/cards] Error:", err);
-      console.error("Error details:", {
-        name: err.name,
-        message: err.message,
-        stack: err.stack,
-        code: err.code,
-      });
 
       if (err.code === 11000) {
         res.status(409).json({
@@ -386,15 +497,14 @@ router.post(
   },
 );
 
-// POST /api/cards/:id/photo
-// Upload 1x1 photo for a card
+// ── POST /api/cards/:id/photo ─────────────────────────────────────────────────
 router.post(
   "/:id/photo",
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const mongoId = req.userId;
-      if (!mongoId) {
+      const customUserId = req.userId;
+      if (!customUserId) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
@@ -406,47 +516,41 @@ router.post(
         res.status(400).json({ error: "Photo is required" });
         return;
       }
-
-      // Validate base64 format
       if (!photo_base64.startsWith("data:image/")) {
-        res.status(400).json({
-          error: "Invalid photo format. Must be a base64 data URI.",
-        });
+        res
+          .status(400)
+          .json({ error: "Invalid photo format. Must be a base64 data URI." });
         return;
       }
 
-      // Find the card
       const card = await Card.findById(id);
       if (!card) {
         res.status(404).json({ error: "Card not found" });
         return;
       }
 
-      // Check if user owns this card
-      const userDoc = (await User.findById(mongoId).lean()) as any;
-      const userId = userDoc?.user_id || mongoId;
+      const user = await User.findOne({ user_id: customUserId }).lean<{
+        role?: string;
+        user_id: string;
+      }>();
+      const isAdmin = user?.role === "MSWD-CSWDO-PDAO";
 
-      if (card.user_id !== userId && userDoc?.role !== "MSWD-CSWDO-PDAO") {
+      if (card.user_id !== customUserId && !isAdmin) {
         res.status(403).json({ error: "Forbidden: You don't own this card" });
         return;
       }
 
-      // Upload to pwd-id-images bucket
       const sanitizedCardId = card.card_id.replace(/[^a-zA-Z0-9\-]/g, "_");
-      const sanitizedUserId = userId.replace(/[^a-zA-Z0-9\-]/g, "_");
+      const sanitizedUserId = customUserId.replace(/[^a-zA-Z0-9\-]/g, "_");
       const photoPath = `${sanitizedUserId}/${sanitizedCardId}/1x1_photo.jpg`;
 
       console.log("[cards] Uploading 1x1 photo to:", photoPath);
 
       const photoUrl = await uploadBase64ToSupabase(photo_base64, photoPath);
+      if (!photoUrl) throw new Error("Failed to upload photo");
 
-      if (!photoUrl) {
-        throw new Error("Failed to upload photo");
-      }
-
-      // Update card with photo URL
       card.id_image_url = photoUrl;
-      card.updated_by = userId;
+      card.updated_by = customUserId;
       await card.save();
 
       console.log("[cards] 1x1 photo uploaded for card:", card.card_id);
@@ -458,39 +562,32 @@ router.post(
       });
     } catch (err: any) {
       console.error("[POST /api/cards/:id/photo] Error:", err);
-      res.status(500).json({
-        error: err?.message ?? "Failed to upload photo",
-      });
+      res.status(500).json({ error: err?.message ?? "Failed to upload photo" });
     }
   },
 );
 
-// GET /api/cards/me
+// ── GET /api/cards/me ─────────────────────────────────────────────────────────
 router.get(
   "/me",
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const mongoId = req.userId;
-      if (!mongoId) {
+      const customUserId = req.userId;
+      if (!customUserId) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
 
-      const userDoc = (await User.findById(mongoId)
-        .select("user_id")
-        .lean()) as any;
-      const userId = userDoc?.user_id || mongoId;
-
-      const cards = await Card.find({ user_id: userId }).sort({
+      console.log("[cards] Fetching cards for user:", customUserId);
+      const cards = await Card.find({ user_id: customUserId }).sort({
         created_at: -1,
       });
+      console.log(
+        `[cards] Found ${cards.length} cards for user ${customUserId}`,
+      );
 
-      res.json({
-        success: true,
-        cards,
-        count: cards.length,
-      });
+      res.json({ success: true, cards, count: cards.length });
     } catch (err: any) {
       console.error("[GET /api/cards/me] Error:", err);
       res.status(500).json({ error: err?.message ?? "Failed to fetch cards" });
@@ -498,29 +595,38 @@ router.get(
   },
 );
 
-// GET /api/cards/check
+// ── GET /api/cards/check ──────────────────────────────────────────────────────
 router.get(
   "/check",
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const mongoId = req.userId;
-      if (!mongoId) {
+      const customUserId = req.userId;
+      if (!customUserId) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
 
-      const userDoc = (await User.findById(mongoId)
-        .select("user_id card_id is_verified")
-        .lean()) as any;
-      const userId = userDoc?.user_id || mongoId;
+      console.log("[cards] Checking card status for user:", customUserId);
 
-      const card = await Card.findOne({ user_id: userId }).lean();
+      const user = await User.findOne({ user_id: customUserId })
+        .select("user_id card_id is_verified")
+        .lean<{ user_id: string; card_id?: string; is_verified?: boolean }>();
+
+      const card = await Card.findOne({ user_id: customUserId })
+        .select("_id card_id status")
+        .lean<{ _id: string; card_id: string; status: string }>();
+
+      console.log("[cards] Check result:", {
+        hasCard: !!card,
+        is_verified: user?.is_verified ?? false,
+        cardId: card?.card_id,
+      });
 
       res.json({
         success: true,
         hasCard: !!card,
-        is_verified: userDoc?.is_verified ?? false,
+        is_verified: user?.is_verified ?? false,
         card: card ?? null,
       });
     } catch (err: any) {
@@ -530,27 +636,30 @@ router.get(
   },
 );
 
-// GET /api/cards/:id
+// ── GET /api/cards/:id ────────────────────────────────────────────────────────
 router.get(
   "/:id",
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const card = await Card.findById(req.params.id);
+      const customUserId = req.userId;
+      if (!customUserId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
 
+      const card = await Card.findById(req.params.id);
       if (!card) {
         res.status(404).json({ error: "Card not found" });
         return;
       }
 
-      // Check if user has access to this card
-      const mongoId = req.userId;
-      const userDoc = (await User.findById(mongoId).lean()) as any;
-      const userId = userDoc?.user_id || mongoId;
+      const user = await User.findOne({ user_id: customUserId })
+        .select("role")
+        .lean<{ role?: string }>();
 
-      // Allow access if user is admin or owns the card
-      const isAdmin = userDoc?.role === "MSWD-CSWDO-PDAO";
-      const isOwner = card.user_id === userId;
+      const isAdmin = user?.role === "MSWD-CSWDO-PDAO";
+      const isOwner = card.user_id === customUserId;
 
       if (!isAdmin && !isOwner) {
         res
@@ -559,10 +668,7 @@ router.get(
         return;
       }
 
-      res.json({
-        success: true,
-        card,
-      });
+      res.json({ success: true, card });
     } catch (err: any) {
       console.error("[GET /api/cards/:id] Error:", err);
       res.status(500).json({ error: err?.message ?? "Failed to fetch card" });

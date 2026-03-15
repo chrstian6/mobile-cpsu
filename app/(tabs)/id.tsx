@@ -6,11 +6,14 @@ import * as SecureStore from "expo-secure-store";
 import {
   AlertCircle,
   Calendar,
+  ChevronRight,
   FileText,
   Heart,
   MapPin,
   Phone,
+  QrCode,
   RotateCw,
+  ScanLine,
   Share2,
   User,
 } from "lucide-react-native";
@@ -22,6 +25,7 @@ import {
   Dimensions,
   Image,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   View,
@@ -53,6 +57,20 @@ interface CardData {
   id_image_url?: string | null;
   status: "Active" | "Expired" | "Revoked" | "Pending";
   last_verified_at?: string | null;
+  created_at: string;
+}
+
+interface Application {
+  _id: string;
+  application_id: string;
+  status:
+    | "Draft"
+    | "Submitted"
+    | "Under Review"
+    | "Approved"
+    | "Rejected"
+    | "Cancelled";
+  application_type: string;
   created_at: string;
 }
 
@@ -677,85 +695,243 @@ function FlipCard({ data }: { data: CardData }) {
 // ─── Main Screen ─────────────────────────────────────────────────────────
 
 export default function IDScreen() {
-  const { user } = useAuthStore();
+  const { user, logout } = useAuthStore();
   const router = useRouter();
   const [card, setCard] = useState<CardData | null>(null);
+  const [application, setApplication] = useState<Application | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorType, setErrorType] = useState<
+    "network" | "auth" | "server" | "unknown"
+  >("unknown");
 
-  const fetchCard = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
+  const handleAuthError = useCallback(async () => {
+    setErrorType("auth");
+    setError("Your session has expired. Please log in again.");
 
-      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
-      if (!token) {
-        setError("Not authenticated");
-        return;
-      }
-
-      // First check if user has a card
-      const checkRes = await fetch(`${EXPRESS_API_BASE}/api/cards/check`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!checkRes.ok) {
-        throw new Error("Failed to check card status");
-      }
-
-      const checkData = await checkRes.json();
-
-      if (!checkData.hasCard) {
-        setCard(null);
-        return;
-      }
-
-      // Get the user's cards
-      const cardsRes = await fetch(`${EXPRESS_API_BASE}/api/cards/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!cardsRes.ok) {
-        throw new Error("Failed to fetch cards");
-      }
-
-      const cardsData = await cardsRes.json();
-
-      if (cardsData.cards && cardsData.cards.length > 0) {
-        // Get the most recent card
-        const latestCard = cardsData.cards[0];
-
-        // Fetch full card details if needed
-        const cardDetailRes = await fetch(
-          `${EXPRESS_API_BASE}/api/cards/${latestCard._id}`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
+    // Show alert and then logout
+    Alert.alert(
+      "Session Expired",
+      "Your session has expired. Please log in again.",
+      [
+        {
+          text: "OK",
+          onPress: async () => {
+            await logout();
+            router.replace("/(auth)/login");
           },
-        );
+        },
+      ],
+    );
+  }, [logout, router]);
 
-        if (cardDetailRes.ok) {
-          const detailData = await cardDetailRes.json();
-          setCard(detailData.card);
-        } else {
-          setCard(latestCard);
+  const fetchData = useCallback(
+    async (showLoadingIndicator = true) => {
+      try {
+        if (showLoadingIndicator) {
+          setLoading(true);
         }
-      } else {
-        setCard(null);
-      }
-    } catch (err: any) {
-      console.error("[ID Screen] Error fetching card:", err);
-      setError(err.message || "Failed to load ID card");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+        setError(null);
 
+        const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+        if (!token) {
+          handleAuthError();
+          return;
+        }
+
+        // Fetch applications to check if user has any application
+        const appsRes = await fetch(`${EXPRESS_API_BASE}/api/applications/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        // Handle 401 Unauthorized (token expired)
+        if (appsRes.status === 401) {
+          const errorData = await appsRes.json().catch(() => ({}));
+          if (
+            errorData.message?.toLowerCase().includes("token expired") ||
+            errorData.code === "REFRESH_TOKEN_EXPIRED" ||
+            errorData.code === "INVALID_REFRESH_TOKEN"
+          ) {
+            handleAuthError();
+            return;
+          }
+        }
+
+        if (!appsRes.ok && appsRes.status !== 404) {
+          setErrorType("server");
+          throw new Error(`Failed to fetch applications: ${appsRes.status}`);
+        }
+
+        if (appsRes.ok) {
+          const appsData = await appsRes.json();
+          const applications = appsData.applications || [];
+
+          // Find the most recent non-rejected/non-cancelled application
+          const activeApp = applications.find(
+            (app: Application) =>
+              !["Cancelled", "Rejected", "Draft"].includes(app.status),
+          );
+
+          setApplication(activeApp || null);
+        }
+
+        // Check if user has a card
+        const checkRes = await fetch(`${EXPRESS_API_BASE}/api/cards/check`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        // Handle 401 Unauthorized (token expired)
+        if (checkRes.status === 401) {
+          const errorData = await checkRes.json().catch(() => ({}));
+          if (
+            errorData.message?.toLowerCase().includes("token expired") ||
+            errorData.code === "REFRESH_TOKEN_EXPIRED" ||
+            errorData.code === "INVALID_REFRESH_TOKEN"
+          ) {
+            handleAuthError();
+            return;
+          }
+        }
+
+        if (!checkRes.ok) {
+          setErrorType("server");
+          throw new Error(`Failed to check card status: ${checkRes.status}`);
+        }
+
+        const checkData = await checkRes.json();
+
+        if (!checkData.hasCard) {
+          setCard(null);
+          return;
+        }
+
+        // Get the user's cards
+        const cardsRes = await fetch(`${EXPRESS_API_BASE}/api/cards/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (cardsRes.status === 401) {
+          const errorData = await cardsRes.json().catch(() => ({}));
+          if (
+            errorData.message?.toLowerCase().includes("token expired") ||
+            errorData.code === "REFRESH_TOKEN_EXPIRED" ||
+            errorData.code === "INVALID_REFRESH_TOKEN"
+          ) {
+            handleAuthError();
+            return;
+          }
+        }
+
+        if (!cardsRes.ok) {
+          setErrorType("server");
+          throw new Error(`Failed to fetch cards: ${cardsRes.status}`);
+        }
+
+        const cardsData = await cardsRes.json();
+
+        if (cardsData.cards && cardsData.cards.length > 0) {
+          // Get the most recent card
+          const latestCard = cardsData.cards[0];
+
+          // Fetch full card details if needed
+          const cardDetailRes = await fetch(
+            `${EXPRESS_API_BASE}/api/cards/${latestCard._id}`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+
+          if (cardDetailRes.status === 401) {
+            const errorData = await cardDetailRes.json().catch(() => ({}));
+            if (
+              errorData.message?.toLowerCase().includes("token expired") ||
+              errorData.code === "REFRESH_TOKEN_EXPIRED" ||
+              errorData.code === "INVALID_REFRESH_TOKEN"
+            ) {
+              handleAuthError();
+              return;
+            }
+          }
+
+          if (cardDetailRes.ok) {
+            const detailData = await cardDetailRes.json();
+            setCard(detailData.card);
+          } else {
+            setCard(latestCard);
+          }
+        } else {
+          setCard(null);
+        }
+
+        // Reset error state on successful fetch
+        setError(null);
+        setErrorType("unknown");
+      } catch (err: any) {
+        console.error("[ID Screen] Error fetching data:", err);
+
+        // Check if it's a network error
+        if (
+          err.message === "Network request failed" ||
+          err.message?.includes("network")
+        ) {
+          setErrorType("network");
+          setError(
+            "Network connection error. Please check your internet connection.",
+          );
+        } else if (
+          err.message?.includes("token") ||
+          err.message?.includes("401")
+        ) {
+          setErrorType("auth");
+          setError("Authentication error. Please log in again.");
+        } else {
+          setErrorType("server");
+          setError(err.message || "Failed to load ID card");
+        }
+      } finally {
+        if (showLoadingIndicator) {
+          setLoading(false);
+        }
+        setRefreshing(false);
+      }
+    },
+    [handleAuthError],
+  );
+
+  // Initial load
   useEffect(() => {
-    fetchCard();
-  }, [fetchCard]);
+    fetchData(true);
+  }, [fetchData]);
+
+  // Pull to refresh handler
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    fetchData(false);
+  }, [fetchData]);
 
   const handleShare = () => {
     Alert.alert("Share", "Sharing feature coming soon!");
+  };
+
+  const handleScanID = () => {
+    router.push("/scan-id");
+  };
+
+  const getStatusMessage = () => {
+    if (application) {
+      switch (application.status) {
+        case "Submitted":
+          return "Your application has been submitted and is waiting for review. Once approved, your ID will be issued.";
+        case "Under Review":
+          return "Your application is currently being reviewed by PDAO. You will receive your ID once approved.";
+        case "Approved":
+          return "Your application has been approved! Your ID is being prepared for issuance.";
+        default:
+          return "Your application is being processed.";
+      }
+    }
+    return "";
   };
 
   if (loading) {
@@ -763,7 +939,7 @@ export default function IDScreen() {
       <SafeAreaView className="flex-1 bg-gray-50">
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#166534" />
-          <Text className="text-gray-600 mt-4">Loading your ID card...</Text>
+          <Text className="text-gray-600 mt-4">Checking your ID status...</Text>
         </View>
       </SafeAreaView>
     );
@@ -772,159 +948,349 @@ export default function IDScreen() {
   if (error) {
     return (
       <SafeAreaView className="flex-1 bg-gray-50">
-        <View className="flex-1 items-center justify-center px-6">
-          <View className="bg-red-50 p-4 rounded-full mb-4">
-            <AlertCircle size={32} color="#dc2626" />
+        <ScrollView
+          className="flex-1"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={["#166534"]}
+              tintColor="#166534"
+            />
+          }
+          contentContainerStyle={{ flexGrow: 1 }}
+        >
+          <View className="flex-1 items-center justify-center px-6">
+            <View
+              className={`p-4 rounded-full mb-4 ${
+                errorType === "network"
+                  ? "bg-amber-50"
+                  : errorType === "auth"
+                    ? "bg-red-50"
+                    : "bg-gray-50"
+              }`}
+            >
+              <AlertCircle
+                size={32}
+                color={
+                  errorType === "network"
+                    ? "#d97706"
+                    : errorType === "auth"
+                      ? "#dc2626"
+                      : "#6b7280"
+                }
+              />
+            </View>
+            <Text className="text-lg font-bold text-gray-900 mb-2">
+              {errorType === "network"
+                ? "Connection Error"
+                : errorType === "auth"
+                  ? "Authentication Error"
+                  : "Oops!"}
+            </Text>
+            <Text className="text-gray-600 text-center mb-6">{error}</Text>
+
+            {errorType === "auth" ? (
+              <Pressable
+                onPress={() => {
+                  logout();
+                  router.replace("/(auth)/login");
+                }}
+                className="bg-green-700 px-6 py-3 rounded-xl"
+              >
+                <Text className="text-white font-semibold">Go to Login</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={onRefresh}
+                className="bg-green-700 px-6 py-3 rounded-xl"
+              >
+                <Text className="text-white font-semibold">Try Again</Text>
+              </Pressable>
+            )}
           </View>
-          <Text className="text-lg font-bold text-gray-900 mb-2">Oops!</Text>
-          <Text className="text-gray-600 text-center mb-6">{error}</Text>
-          <Pressable
-            onPress={fetchCard}
-            className="bg-green-700 px-6 py-3 rounded-xl"
-          >
-            <Text className="text-white font-semibold">Try Again</Text>
-          </Pressable>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
 
-  if (!card) {
+  // Case 1: User has a card
+  if (card) {
     return (
       <SafeAreaView className="flex-1 bg-gray-50">
-        <View className="flex-1 items-center justify-center px-6">
-          <View className="bg-amber-50 p-4 rounded-full mb-4">
-            <FileText size={32} color="#d97706" />
+        <ScrollView
+          className="flex-1"
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={["#166534"]}
+              tintColor="#166534"
+            />
+          }
+        >
+          {/* Header */}
+          <View className="px-6 pt-4 pb-2">
+            <Text className="text-2xl font-bold text-gray-900">My ID</Text>
+            <Text className="text-gray-500 text-sm mt-1">
+              {card.status === "Active"
+                ? "Active PWD ID Card"
+                : `${card.status} ID Card`}
+            </Text>
           </View>
-          <Text className="text-lg font-bold text-gray-900 mb-2">
-            No ID Card Found
-          </Text>
-          <Text className="text-gray-600 text-center mb-6">
-            You don't have an ID card yet. Apply for a PWD ID to get started.
-          </Text>
-          <Pressable
-            onPress={() => router.push("/apply")}
-            className="bg-green-700 px-6 py-3 rounded-xl"
-          >
-            <Text className="text-white font-semibold">Apply Now</Text>
-          </Pressable>
-        </View>
+
+          {/* Flip Card */}
+          <View className="px-6 mt-4">
+            <FlipCard data={card} />
+          </View>
+
+          {/* Action Buttons */}
+          <View className="px-6 mt-6">
+            <View className="flex-row gap-3">
+              <Pressable
+                onPress={handleShare}
+                className="flex-1 bg-white border border-green-200 py-4 rounded-xl flex-row items-center justify-center gap-2"
+                style={{
+                  shadowColor: "#166534",
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.1,
+                  shadowRadius: 4,
+                  elevation: 2,
+                }}
+              >
+                <Share2 size={18} color="#166534" />
+                <Text className="text-green-700 font-semibold">Share</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          {/* Card Details Summary */}
+          <View className="px-6 mt-8 mb-10">
+            <Text className="text-gray-900 text-lg font-bold mb-4">
+              Card Details
+            </Text>
+
+            <View className="bg-white rounded-2xl border border-gray-100 overflow-hidden shadow-sm">
+              <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
+                <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
+                  <User size={14} color="#166534" />
+                </View>
+                <Text className="text-gray-500 text-sm flex-1">Full Name</Text>
+                <Text className="text-gray-900 text-sm font-medium">
+                  {card.name}
+                </Text>
+              </View>
+
+              <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
+                <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
+                  <MapPin size={14} color="#166534" />
+                </View>
+                <Text className="text-gray-500 text-sm flex-1">Barangay</Text>
+                <Text className="text-gray-900 text-sm font-medium">
+                  {card.barangay}
+                </Text>
+              </View>
+
+              <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
+                <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
+                  <Heart size={14} color="#166534" />
+                </View>
+                <Text className="text-gray-500 text-sm flex-1">
+                  Disability Type
+                </Text>
+                <Text className="text-gray-900 text-sm font-medium">
+                  {card.type_of_disability}
+                </Text>
+              </View>
+
+              <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
+                <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
+                  <Calendar size={14} color="#166534" />
+                </View>
+                <Text className="text-gray-500 text-sm flex-1">
+                  Date Issued
+                </Text>
+                <Text className="text-gray-900 text-sm font-medium">
+                  {new Date(card.date_issued).toLocaleDateString()}
+                </Text>
+              </View>
+
+              <View className="flex-row items-center px-4 py-3">
+                <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
+                  <Phone size={14} color="#166534" />
+                </View>
+                <Text className="text-gray-500 text-sm flex-1">
+                  Emergency Contact
+                </Text>
+                <Text className="text-gray-900 text-sm font-medium">
+                  {card.emergency_contact_name}
+                </Text>
+              </View>
+            </View>
+
+            {/* Status Badge */}
+            <View className="mt-4 flex-row items-center justify-between bg-green-50 p-4 rounded-xl border border-green-100">
+              <View className="flex-row items-center gap-2">
+                <View className="w-2 h-2 rounded-full bg-green-600" />
+                <Text className="text-green-800 font-semibold">
+                  Card Status
+                </Text>
+              </View>
+              <View className="bg-white px-3 py-1 rounded-full border border-green-200">
+                <Text className="text-green-700 text-sm font-medium">
+                  {card.status}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
 
-  return (
-    <SafeAreaView className="flex-1 bg-gray-50">
-      <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View className="px-6 pt-4 pb-2">
-          <Text className="text-2xl font-bold text-gray-900">My ID</Text>
-          <Text className="text-gray-500 text-sm mt-1">
-            {card.status === "Active"
-              ? "Active PWD ID Card"
-              : `${card.status} ID Card`}
-          </Text>
-        </View>
+  // Case 2: User has an active application but no card yet
+  if (application) {
+    return (
+      <SafeAreaView className="flex-1 bg-gray-50">
+        <ScrollView
+          className="flex-1"
+          contentContainerStyle={{ flexGrow: 1 }}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={["#166534"]}
+              tintColor="#166534"
+            />
+          }
+        >
+          <View className="flex-1 items-center justify-center px-6">
+            <View className="bg-blue-50 p-4 rounded-full mb-4">
+              <FileText size={32} color="#2563EB" />
+            </View>
+            <Text className="text-lg font-bold text-gray-900 mb-2">
+              Application in Progress
+            </Text>
+            <Text className="text-gray-600 text-center mb-4">
+              {getStatusMessage()}
+            </Text>
 
-        {/* Flip Card */}
-        <View className="px-6 mt-4">
-          <FlipCard data={card} />
-        </View>
+            {/* Application Status Card */}
+            <View className="bg-white rounded-2xl p-4 w-full border border-gray-100 mb-6">
+              <View className="flex-row items-center justify-between mb-3">
+                <Text className="text-gray-500 text-sm">Application ID</Text>
+                <Text className="text-gray-900 font-mono text-sm">
+                  {application.application_id}
+                </Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-gray-500 text-sm">Status</Text>
+                <View className="bg-blue-100 px-3 py-1 rounded-full">
+                  <Text className="text-blue-700 text-xs font-semibold">
+                    {application.status}
+                  </Text>
+                </View>
+              </View>
+            </View>
 
-        {/* Action Buttons - Only Share button remains */}
-        <View className="px-6 mt-6">
-          <View className="flex-row gap-3">
             <Pressable
-              onPress={handleShare}
-              className="flex-1 bg-white border border-green-200 py-4 rounded-xl flex-row items-center justify-center gap-2"
-              style={{
-                shadowColor: "#166534",
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.1,
-                shadowRadius: 4,
-                elevation: 2,
-              }}
+              onPress={() => router.push("/screens/application")}
+              className="bg-green-700 px-6 py-3 rounded-xl w-full"
             >
-              <Share2 size={18} color="#166534" />
-              <Text className="text-green-700 font-semibold">Share</Text>
+              <Text className="text-white font-semibold text-center">
+                Track Application
+              </Text>
             </Pressable>
           </View>
-        </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
 
-        {/* Card Details Summary */}
-        <View className="px-6 mt-8 mb-10">
-          <Text className="text-gray-900 text-lg font-bold mb-4">
-            Card Details
+  // Case 3: No application and no card - Show options
+  return (
+    <SafeAreaView className="flex-1 bg-gray-50">
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ flexGrow: 1 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#166534"]}
+            tintColor="#166534"
+          />
+        }
+      >
+        <View className="flex-1 items-center justify-center px-6">
+          <View className="w-24 h-24 bg-amber-50 rounded-3xl items-center justify-center mb-6">
+            <QrCode size={48} color="#d97706" />
+          </View>
+          <Text className="text-2xl font-bold text-gray-900 mb-2 text-center">
+            No ID Card Found
+          </Text>
+          <Text className="text-gray-500 text-center mb-8 leading-5">
+            Choose an option below to get started with your PWD ID registration
+            or verification.
           </Text>
 
-          <View className="bg-white rounded-2xl border border-gray-100 overflow-hidden shadow-sm">
-            <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
-              <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
-                <User size={14} color="#166534" />
+          {/* Option 1: Scan Existing ID */}
+          <Pressable
+            onPress={handleScanID}
+            className="w-full bg-white border-2 border-green-600 rounded-2xl p-6 mb-4 active:bg-green-50"
+            style={{
+              shadowColor: "#166534",
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.1,
+              shadowRadius: 8,
+              elevation: 3,
+            }}
+          >
+            <View className="flex-row items-center gap-4">
+              <View className="w-14 h-14 bg-green-100 rounded-xl items-center justify-center">
+                <ScanLine size={28} color="#166534" />
               </View>
-              <Text className="text-gray-500 text-sm flex-1">Full Name</Text>
-              <Text className="text-gray-900 text-sm font-medium">
-                {card.name}
-              </Text>
-            </View>
-
-            <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
-              <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
-                <MapPin size={14} color="#166534" />
+              <View className="flex-1">
+                <Text className="text-gray-900 text-lg font-bold mb-1">
+                  Scan Existing ID
+                </Text>
+                <Text className="text-gray-500 text-sm">
+                  If you already have a PWD ID, scan it to verify and link to
+                  your account
+                </Text>
               </View>
-              <Text className="text-gray-500 text-sm flex-1">Barangay</Text>
-              <Text className="text-gray-900 text-sm font-medium">
-                {card.barangay}
-              </Text>
+              <ChevronRight size={20} color="#166534" />
             </View>
+          </Pressable>
 
-            <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
-              <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3" >
-                <Heart size={14} color="#166534" />
+          {/* Option 2: Apply for New ID */}
+          <Pressable
+            onPress={() => router.push("/apply")}
+            className="w-full bg-green-700 rounded-2xl p-6 mb-4 active:bg-green-800"
+            style={{
+              shadowColor: "#166534",
+              shadowOffset: { width: 0, height: 4 },
+              shadowOpacity: 0.2,
+              shadowRadius: 8,
+              elevation: 3,
+            }}
+          >
+            <View className="flex-row items-center gap-4">
+              <View className="w-14 h-14 bg-green-600 rounded-xl items-center justify-center">
+                <FileText size={28} color="#ffffff" />
               </View>
-              <Text className="text-gray-500 text-sm flex-1">
-                Disability Type
-              </Text>
-              <Text className="text-gray-900 text-sm font-medium">
-                {card.type_of_disability}
-              </Text>
-            </View>
-
-            <View className="flex-row items-center px-4 py-3 border-b border-gray-50">
-              <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
-                <Calendar size={14} color="#166534" />
+              <View className="flex-1">
+                <Text className="text-white text-lg font-bold mb-1">
+                  Apply for New ID
+                </Text>
+                <Text className="text-green-100 text-sm">
+                  Don't have a PWD ID yet? Start your application here
+                </Text>
               </View>
-              <Text className="text-gray-500 text-sm flex-1">Date Issued</Text>
-              <Text className="text-gray-900 text-sm font-medium">
-                {new Date(card.date_issued).toLocaleDateString()}
-              </Text>
+              <ChevronRight size={20} color="#ffffff" />
             </View>
-
-            <View className="flex-row items-center px-4 py-3">
-              <View className="w-8 h-8 bg-green-50 rounded-lg items-center justify-center mr-3">
-                <Phone size={14} color="#166534" />
-              </View>
-              <Text className="text-gray-500 text-sm flex-1">
-                Emergency Contact
-              </Text>
-              <Text className="text-gray-900 text-sm font-medium">
-                {card.emergency_contact_name}
-              </Text>
-            </View>
-          </View>
-
-          {/* Status Badge */}
-          <View className="mt-4 flex-row items-center justify-between bg-green-50 p-4 rounded-xl border border-green-100">
-            <View className="flex-row items-center gap-2">
-              <View className="w-2 h-2 rounded-full bg-green-600" />
-              <Text className="text-green-800 font-semibold">Card Status</Text>
-            </View>
-            <View className="bg-white px-3 py-1 rounded-full border border-green-200">
-              <Text className="text-green-700 text-sm font-medium">
-                {card.status}
-              </Text>
-            </View>
-          </View>
+          </Pressable>
         </View>
       </ScrollView>
     </SafeAreaView>

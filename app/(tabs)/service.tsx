@@ -13,11 +13,13 @@ import {
   Search,
   UserPlus,
 } from "lucide-react-native";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   View,
@@ -35,12 +37,29 @@ type ApplicationStatus =
   | "Rejected"
   | "Cancelled";
 
+type CashAssistanceStatus =
+  | "Submitted"
+  | "Under Review"
+  | "Approved"
+  | "Rejected"
+  | "Cancelled";
+
 interface Application {
   _id: string;
   application_id: string;
   status: ApplicationStatus;
   application_type: string;
   created_at: string;
+}
+
+interface CashAssistanceRequest {
+  _id: string;
+  form_id: string;
+  purpose: string;
+  medical_certificate_url: string;
+  status: CashAssistanceStatus;
+  created_at: string;
+  updated_at: string;
 }
 
 interface Card {
@@ -71,9 +90,9 @@ const services = [
     category: "Registration",
     items: [
       {
-        title: "New PWD Application",
+        title: "Application Status",
         icon: UserPlus,
-        description: "Apply for PWD registration and ID",
+        description: "Check your PWD application status",
         route: "pwd-application",
         requiresAuth: true,
         checkExisting: true,
@@ -84,16 +103,16 @@ const services = [
     category: "Assistance",
     items: [
       {
-        title: "Financial Assistance",
+        title: "Cash Assistance Status",
         icon: FileText,
-        description: "Apply for financial aid",
+        description: "Apply for financial aid and track status",
         route: "/screens/financial-assistance",
       },
       {
-        title: "Medical Assistance",
+        title: "Device Request Status",
         icon: RefreshCw,
-        description: "Request medical support",
-        route: "/medical-assistance",
+        description: "Track your device requests",
+        route: "/screens/device-request-status",
       },
     ],
   },
@@ -121,15 +140,25 @@ export default function ServicesScreen() {
     {},
   );
   const [application, setApplication] = useState<Application | null>(null);
+  const [cashRequests, setCashRequests] = useState<CashAssistanceRequest[]>([]);
   const [card, setCard] = useState<Card | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
+  const [checkingCashRequests, setCheckingCashRequests] = useState(false);
   const [checkingCard, setCheckingCard] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Check for existing application and card on mount
+  // Check for existing application, cash requests, and card on mount
   useEffect(() => {
-    checkExistingApplication();
-    checkExistingCard();
+    fetchAllData();
   }, []);
+
+  const fetchAllData = async () => {
+    await Promise.all([
+      checkExistingApplication(),
+      checkExistingCashRequests(),
+      checkExistingCard(),
+    ]);
+  };
 
   const checkExistingApplication = async () => {
     try {
@@ -161,6 +190,37 @@ export default function ServicesScreen() {
     }
   };
 
+  const checkExistingCashRequests = async () => {
+    try {
+      setCheckingCashRequests(true);
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+      if (!token) return;
+
+      const res = await fetch(`${EXPRESS_API_BASE}/api/cash-assistance/me`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const requests = data.cash_assistance || [];
+
+        // Sort by most recent first and get pending requests
+        const sortedRequests = requests.sort(
+          (a: CashAssistanceRequest, b: CashAssistanceRequest) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        );
+
+        setCashRequests(sortedRequests);
+      }
+    } catch (err) {
+      console.error("[services] Error checking cash requests:", err);
+    } finally {
+      setCheckingCashRequests(false);
+    }
+  };
+
   const checkExistingCard = async () => {
     try {
       setCheckingCard(true);
@@ -186,6 +246,13 @@ export default function ServicesScreen() {
       setCheckingCard(false);
     }
   };
+
+  // Pull to refresh handler
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchAllData();
+    setRefreshing(false);
+  }, []);
 
   const handlePWDApplicationPress = async () => {
     setLoadingStates((prev) => ({ ...prev, "pwd-application": true }));
@@ -323,7 +390,7 @@ export default function ServicesScreen() {
   const handleServicePress = async (
     service: (typeof services)[0]["items"][0],
   ) => {
-    if (service.title === "New PWD Application") {
+    if (service.title === "Application Status") {
       await handlePWDApplicationPress();
     } else if (service.route) {
       router.push(service.route as any);
@@ -345,6 +412,23 @@ export default function ServicesScreen() {
     }
   };
 
+  const getCashStatusColor = (status: CashAssistanceStatus) => {
+    switch (status) {
+      case "Submitted":
+        return "text-blue-600 bg-blue-50 border-blue-200";
+      case "Under Review":
+        return "text-yellow-600 bg-yellow-50 border-yellow-200";
+      case "Approved":
+        return "text-green-600 bg-green-50 border-green-200";
+      case "Rejected":
+        return "text-red-600 bg-red-50 border-red-200";
+      case "Cancelled":
+        return "text-gray-600 bg-gray-50 border-gray-200";
+      default:
+        return "text-gray-600 bg-gray-50 border-gray-200";
+    }
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-PH", {
       year: "numeric",
@@ -353,9 +437,31 @@ export default function ServicesScreen() {
     });
   };
 
+  const getRecentCashRequests = () => {
+    // Get only pending requests (Submitted and Under Review)
+    return cashRequests
+      .filter(
+        (req) => req.status === "Submitted" || req.status === "Under Review",
+      )
+      .slice(0, 2); // Show only the 2 most recent
+  };
+
   return (
-    <SafeAreaView className="flex-1 bg-gray-50" edges={["top", "bottom"]}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+    <SafeAreaView className="flex-1 bg-gray-50" edges={["top"]}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#166534"]}
+            tintColor="#166534"
+          />
+        }
+        contentContainerStyle={{
+          paddingBottom: Platform.OS === "ios" ? 100 : 120, // Add extra padding for tab bar
+        }}
+      >
         {/* Search Bar */}
         <View className="px-6 pt-4">
           <View className="bg-white rounded-2xl p-4 flex-row items-center shadow-sm">
@@ -380,7 +486,7 @@ export default function ServicesScreen() {
                   </View>
                   <View className="flex-1">
                     <Text className="text-green-800 text-[13px] font-bold">
-                      Your Application
+                      Your PWD Application
                     </Text>
                     <Text className="text-green-600 text-[11px] mt-0.5">
                       {application.application_id} • {application.status}
@@ -393,13 +499,127 @@ export default function ServicesScreen() {
               <View className="px-6 mt-4">
                 <View className="bg-gray-50 border border-gray-200 rounded-2xl p-4">
                   <Text className="text-gray-500 text-[13px] text-center">
-                    No PWD application yet. Tap "New PWD Application" to get
+                    No PWD application yet. Tap "Application Status" to get
                     started.
                   </Text>
                 </View>
               </View>
             )}
           </>
+        )}
+
+        {/* Cash Assistance Status Banner */}
+        {!checkingCashRequests && cashRequests.length > 0 && (
+          <View className="px-6 mt-4">
+            {getRecentCashRequests().map((request, index) => (
+              <Pressable
+                key={request._id}
+                onPress={() => router.push("/screens/financial-assistance")}
+                className={`${getCashStatusColor(request.status)} rounded-2xl p-4 border mb-2 ${
+                  index === getRecentCashRequests().length - 1 ? "" : "mb-2"
+                }`}
+              >
+                <View className="flex-row items-center gap-3">
+                  <View
+                    className={`w-10 h-10 rounded-xl items-center justify-center ${
+                      request.status === "Submitted"
+                        ? "bg-blue-100"
+                        : request.status === "Under Review"
+                          ? "bg-yellow-100"
+                          : request.status === "Approved"
+                            ? "bg-green-100"
+                            : request.status === "Rejected"
+                              ? "bg-red-100"
+                              : "bg-gray-100"
+                    }`}
+                  >
+                    <FileText
+                      size={20}
+                      color={
+                        request.status === "Submitted"
+                          ? "#2563EB"
+                          : request.status === "Under Review"
+                            ? "#D97706"
+                            : request.status === "Approved"
+                              ? "#059669"
+                              : request.status === "Rejected"
+                                ? "#DC2626"
+                                : "#6B7280"
+                      }
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <View className="flex-row items-center gap-2">
+                      <Text className="font-bold text-[14px] text-gray-900">
+                        Cash Assistance
+                      </Text>
+                      <View
+                        className={`px-2 py-0.5 rounded-full ${
+                          request.status === "Submitted"
+                            ? "bg-blue-100"
+                            : request.status === "Under Review"
+                              ? "bg-yellow-100"
+                              : request.status === "Approved"
+                                ? "bg-green-100"
+                                : request.status === "Rejected"
+                                  ? "bg-red-100"
+                                  : "bg-gray-100"
+                        }`}
+                      >
+                        <Text
+                          className={`text-[9px] font-semibold ${
+                            request.status === "Submitted"
+                              ? "text-blue-700"
+                              : request.status === "Under Review"
+                                ? "text-yellow-700"
+                                : request.status === "Approved"
+                                  ? "text-green-700"
+                                  : request.status === "Rejected"
+                                    ? "text-red-700"
+                                    : "text-gray-700"
+                          }`}
+                        >
+                          {request.status}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text
+                      className="text-gray-600 text-[12px] mt-0.5"
+                      numberOfLines={1}
+                    >
+                      {request.purpose.substring(0, 40)}...
+                    </Text>
+                    <View className="flex-row items-center gap-2 mt-1">
+                      <View className="flex-row items-center gap-1">
+                        <FileText size={10} color="#9ca3af" />
+                        <Text className="text-gray-400 text-[10px]">
+                          {request.form_id}
+                        </Text>
+                      </View>
+                      <View className="w-1 h-1 rounded-full bg-gray-300" />
+                      <View className="flex-row items-center gap-1">
+                        <Calendar size={10} color="#9ca3af" />
+                        <Text className="text-gray-400 text-[10px]">
+                          {formatDate(request.created_at)}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                  <ChevronRight size={18} color="#9ca3af" />
+                </View>
+              </Pressable>
+            ))}
+            {cashRequests.length > 2 && (
+              <Pressable
+                onPress={() => router.push("/screens/financial-assistance")}
+                className="mt-1"
+              >
+                <Text className="text-green-600 text-[12px] font-semibold text-center">
+                  View all {cashRequests.length} requests →
+                </Text>
+              </Pressable>
+            )}
+          </View>
         )}
 
         {/* Card Status Banner */}
@@ -511,7 +731,7 @@ export default function ServicesScreen() {
         )}
 
         {/* Loading states */}
-        {(checkingStatus || checkingCard) && (
+        {(checkingStatus || checkingCashRequests || checkingCard) && (
           <View className="px-6 mt-4">
             <View className="bg-gray-50 border border-gray-200 rounded-2xl p-4 items-center">
               <ActivityIndicator size="small" color="#166534" />
@@ -523,7 +743,7 @@ export default function ServicesScreen() {
         )}
 
         {/* Services List */}
-        <View className="px-6 pt-6 pb-8">
+        <View className="px-6 pt-6">
           {services.map((category, categoryIndex) => (
             <View key={categoryIndex} className="mb-6">
               <Text className="text-gray-900 text-lg font-bold mb-3">
@@ -569,19 +789,23 @@ export default function ServicesScreen() {
           ))}
         </View>
 
-        {/* Info Footer */}
-        <View className="px-6 pb-6">
+        {/* Info Footer - Now with extra bottom padding */}
+        <View className="px-6 pb-10">
           <View className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
             <View className="flex-row gap-2">
               <AlertCircle size={16} color="#2563EB" />
               <Text className="text-blue-700 text-[12px] leading-5 flex-1">
                 <Text className="font-bold">Note: </Text>
                 Only one PWD application is allowed per user. You can track your
-                application status and ID details here.
+                application status, ID details, and cash assistance requests
+                here.
               </Text>
             </View>
           </View>
         </View>
+
+        {/* Extra bottom spacing to ensure content isn't covered by tab bar */}
+        <View className="h-10" />
       </ScrollView>
     </SafeAreaView>
   );

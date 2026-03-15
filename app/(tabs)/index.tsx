@@ -20,6 +20,7 @@ import {
   FlatList,
   Image,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   View,
@@ -100,7 +101,7 @@ const announcements = [
   },
 ];
 
-// Services with optional route
+// Services with routes - Updated to include Request Devices
 const services: {
   id: number;
   tag: string;
@@ -119,7 +120,8 @@ const services: {
     id: 2,
     tag: "Equipment",
     title: "Request\nDevices",
-    description: "Wheelchair, cane & more",
+    description: "Wheelchair, cane, and other devices",
+    route: "/screens/request-device", // This links to the request device screen
   },
 ];
 
@@ -423,6 +425,7 @@ export default function HomeScreen() {
   const [userStatus, setUserStatus] = useState<UserStatus>("loading");
   const [statusCheckDone, setStatusCheckDone] = useState(false);
   const [profileSheetVisible, setProfileSheetVisible] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const handleLogout = () => {
     setProfileSheetVisible(false);
@@ -481,6 +484,12 @@ export default function HomeScreen() {
       setStatusCheckDone(true);
     }
   }, [user?.is_verified]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await checkUserStatus();
+    setRefreshing(false);
+  }, [checkUserStatus]);
 
   useEffect(() => {
     checkUserStatus();
@@ -544,7 +553,19 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={["top"]}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#166534"
+            colors={["#166534"]}
+            title="Pull to refresh"
+            titleColor="#166534"
+          />
+        }
+      >
         {/* Header */}
         <View className="px-6 pt-2 pb-2">
           <View className="flex-row justify-between items-center">
@@ -632,7 +653,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Services — Cash Assistance card is now tappable */}
+        {/* Services - Request Devices is now linked */}
         <View className="px-6 mt-8">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight mb-3">
             Services
@@ -660,7 +681,7 @@ export default function HomeScreen() {
                 {s.route && (
                   <View className="flex-row items-center mt-3 gap-1">
                     <Text className="text-green-700 text-[11px] font-semibold">
-                      Apply Now
+                      {s.id === 2 ? "Request Now" : "Apply Now"}
                     </Text>
                     <ChevronRight size={11} color="#15803d" strokeWidth={2.5} />
                   </View>

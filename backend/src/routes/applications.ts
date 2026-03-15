@@ -1,5 +1,6 @@
 // backend/src/routes/applications.ts
 import { Response, Router } from "express";
+import mongoose from "mongoose";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import Application, {
   ApplicationUpdateSchema,
@@ -9,10 +10,48 @@ import User from "../models/User";
 
 const router = Router();
 
-// ── Helper: resolve custom user_id from mongo _id ────────────────────────────
-const resolveUserId = async (mongoId: string): Promise<string> => {
-  const user = (await User.findById(mongoId).select("user_id").lean()) as any;
-  return user?.user_id || mongoId;
+// Helper to get the custom user_id from either MongoDB _id or custom user_id
+const getCustomUserId = async (identifier: string): Promise<string> => {
+  // Check if the identifier is a valid MongoDB ObjectId
+  const isValidObjectId = mongoose.Types.ObjectId.isValid(identifier);
+
+  if (isValidObjectId) {
+    // If it's a valid ObjectId, find the user by _id and return their custom user_id
+    const user = await User.findById(identifier).select("user_id").lean();
+    if (user && (user as any).user_id) {
+      return (user as any).user_id;
+    }
+  } else {
+    // If it's not a valid ObjectId, assume it's already a custom user_id
+    // But verify it exists in the database
+    const user = await User.findOne({ user_id: identifier })
+      .select("user_id")
+      .lean();
+    if (user && (user as any).user_id) {
+      return (user as any).user_id;
+    }
+  }
+
+  // If no user found, return the original identifier (though this shouldn't happen)
+  console.warn(
+    `[getCustomUserId] No user found for identifier: ${identifier}, returning as is`,
+  );
+  return identifier;
+};
+
+// Helper to get user details using custom user_id
+const getUserDetailsByCustomId = async (customUserId: string): Promise<any> => {
+  return await User.findOne({ user_id: customUserId }).lean();
+};
+
+// Helper to get MongoDB _id from custom user_id (for User.findById operations)
+const getMongoIdFromCustomId = async (
+  customUserId: string,
+): Promise<string | null> => {
+  const user = await User.findOne({ user_id: customUserId })
+    .select("_id")
+    .lean();
+  return user ? (user as any)._id.toString() : null;
 };
 
 // ── Helper: format zod errors into a flat readable object ────────────────────
@@ -32,14 +71,25 @@ router.post(
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const mongoId = req.userId!;
-      const userId = await resolveUserId(mongoId);
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      // Get the custom user_id
+      const customUserId = await getCustomUserId(identifier);
+
+      // Get MongoDB _id for User.findById operations
+      const mongoId =
+        (await getMongoIdFromCustomId(customUserId)) || identifier;
 
       // Check if user already has a pending/submitted application
       const existing = await Application.findOne({
-        user_id: userId,
+        user_id: customUserId,
         status: { $in: ["Draft", "Submitted", "Under Review"] },
       });
+
       if (existing) {
         res.status(409).json({
           error: "Duplicate application",
@@ -52,7 +102,7 @@ router.post(
       // Validate with Zod
       const parsed = ApplicationZodSchema.safeParse({
         ...req.body,
-        user_id: userId,
+        user_id: customUserId,
         status: "Submitted",
         date_applied: new Date(),
       });
@@ -67,7 +117,7 @@ router.post(
 
       const application = new Application({
         ...parsed.data,
-        created_by: userId,
+        created_by: customUserId,
       });
 
       await application.save();
@@ -75,11 +125,11 @@ router.post(
       // Link application_id to user.form_id
       await User.findByIdAndUpdate(mongoId, {
         form_id: application.application_id,
-        updated_by: userId,
+        updated_by: customUserId,
       });
 
       console.log(
-        `✅ Application submitted: ${application.application_id} | user: ${userId}`,
+        `✅ Application submitted: ${application.application_id} | user: ${customUserId}`,
       );
 
       res.status(201).json({
@@ -122,19 +172,26 @@ router.post(
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const mongoId = req.userId!;
-      const userId = await resolveUserId(mongoId);
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const customUserId = await getCustomUserId(identifier);
+      const mongoId =
+        (await getMongoIdFromCustomId(customUserId)) || identifier;
 
       // If draft already exists, update it instead
       const existingDraft = await Application.findOne({
-        user_id: userId,
+        user_id: customUserId,
         status: "Draft",
       });
 
       if (existingDraft) {
         const parsed = ApplicationUpdateSchema.safeParse({
           ...req.body,
-          user_id: userId,
+          user_id: customUserId,
         });
         if (!parsed.success) {
           res.status(400).json({
@@ -143,7 +200,10 @@ router.post(
           });
           return;
         }
-        Object.assign(existingDraft, { ...parsed.data, updated_by: userId });
+        Object.assign(existingDraft, {
+          ...parsed.data,
+          updated_by: customUserId,
+        });
         await existingDraft.save();
         res.json({
           success: true,
@@ -161,7 +221,7 @@ router.post(
       // Create new draft — use partial schema, only user_id required
       const parsed = ApplicationUpdateSchema.safeParse({
         ...req.body,
-        user_id: userId,
+        user_id: customUserId,
         status: "Draft",
       });
 
@@ -175,14 +235,14 @@ router.post(
 
       const application = new Application({
         ...parsed.data,
-        created_by: userId,
+        created_by: customUserId,
       });
 
       await application.save();
 
       await User.findByIdAndUpdate(mongoId, {
         form_id: application.application_id,
-        updated_by: userId,
+        updated_by: customUserId,
       });
 
       res.status(201).json({
@@ -211,12 +271,21 @@ router.get(
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const userId = await resolveUserId(req.userId!);
-      const applications = await Application.find({ user_id: userId })
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const customUserId = await getCustomUserId(identifier);
+
+      const applications = await Application.find({ user_id: customUserId })
         .sort({ created_at: -1 })
         .select("-__v");
+
       res.json({ success: true, applications });
     } catch (err: any) {
+      console.error("[GET /api/applications/me]", err);
       res
         .status(500)
         .json({ error: err?.message ?? "Failed to fetch applications" });
@@ -233,15 +302,24 @@ router.get(
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const userId = await resolveUserId(req.userId!);
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const customUserId = await getCustomUserId(identifier);
+
       const application = await Application.findOne({
-        user_id: userId,
+        user_id: customUserId,
         status: { $nin: ["Cancelled", "Rejected"] },
       })
         .sort({ created_at: -1 })
         .select("-__v");
+
       res.json({ success: true, application: application ?? null });
     } catch (err: any) {
+      console.error("[GET /api/applications/me/active]", err);
       res
         .status(500)
         .json({ error: err?.message ?? "Failed to fetch application" });
@@ -259,9 +337,17 @@ router.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const customUserId = await getCustomUserId(identifier);
+
       const application = await Application.findOne({
         $or: [
-          { _id: id.match(/^[a-f\d]{24}$/i) ? id : null },
+          { _id: mongoose.Types.ObjectId.isValid(id) ? id : null },
           { application_id: id },
         ],
       }).select("-__v");
@@ -271,13 +357,10 @@ router.get(
         return;
       }
 
-      // Only allow the owner or admin/staff to view
-      const userId = await resolveUserId(req.userId!);
-      const userDoc = (await User.findById(req.userId)
-        .select("role")
-        .lean()) as any;
-      const isOwner = application.user_id === userId;
-      const isStaff = ["Admin", "Supervisor", "Staff"].includes(userDoc?.role);
+      // Get user to check role
+      const user = await getUserDetailsByCustomId(customUserId);
+      const isOwner = application.user_id === customUserId;
+      const isStaff = ["Admin", "Supervisor", "Staff"].includes(user?.role);
 
       if (!isOwner && !isStaff) {
         res.status(403).json({ error: "Access denied" });
@@ -286,6 +369,7 @@ router.get(
 
       res.json({ success: true, application });
     } catch (err: any) {
+      console.error("[GET /api/applications/:id]", err);
       res
         .status(500)
         .json({ error: err?.message ?? "Failed to fetch application" });
@@ -302,19 +386,35 @@ router.patch(
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const userId = await resolveUserId(req.userId!);
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const customUserId = await getCustomUserId(identifier);
+
       const application = await Application.findOne({
-        $or: [{ _id: req.params.id }, { application_id: req.params.id }],
+        $or: [
+          {
+            _id: mongoose.Types.ObjectId.isValid(req.params.id)
+              ? req.params.id
+              : null,
+          },
+          { application_id: req.params.id },
+        ],
       });
 
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
       }
-      if (application.user_id !== userId) {
+
+      if (application.user_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
+
       if (application.status !== "Draft") {
         res.status(400).json({
           error: "Cannot edit application",
@@ -325,8 +425,9 @@ router.patch(
 
       const parsed = ApplicationUpdateSchema.safeParse({
         ...req.body,
-        user_id: userId,
+        user_id: customUserId,
       });
+
       if (!parsed.success) {
         res.status(400).json({
           error: "Validation failed",
@@ -335,7 +436,7 @@ router.patch(
         return;
       }
 
-      Object.assign(application, { ...parsed.data, updated_by: userId });
+      Object.assign(application, { ...parsed.data, updated_by: customUserId });
       await application.save();
 
       res.json({
@@ -349,6 +450,7 @@ router.patch(
         },
       });
     } catch (err: any) {
+      console.error("[PATCH /api/applications/:id]", err);
       res
         .status(500)
         .json({ error: err?.message ?? "Failed to update application" });
@@ -365,19 +467,35 @@ router.patch(
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const userId = await resolveUserId(req.userId!);
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const customUserId = await getCustomUserId(identifier);
+
       const application = await Application.findOne({
-        $or: [{ _id: req.params.id }, { application_id: req.params.id }],
+        $or: [
+          {
+            _id: mongoose.Types.ObjectId.isValid(req.params.id)
+              ? req.params.id
+              : null,
+          },
+          { application_id: req.params.id },
+        ],
       });
 
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
       }
-      if (application.user_id !== userId) {
+
+      if (application.user_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
+
       if (application.status !== "Draft") {
         res.status(400).json({
           error: "Only Draft applications can be submitted",
@@ -389,9 +507,10 @@ router.patch(
       // Full validation before submitting
       const parsed = ApplicationZodSchema.safeParse({
         ...application.toObject(),
-        user_id: userId,
+        user_id: customUserId,
         status: "Submitted",
       });
+
       if (!parsed.success) {
         res.status(400).json({
           error: "Application is incomplete",
@@ -403,7 +522,7 @@ router.patch(
 
       application.status = "Submitted";
       application.date_applied = new Date();
-      (application as any).updated_by = userId;
+      (application as any).updated_by = customUserId;
       await application.save();
 
       res.json({
@@ -417,6 +536,7 @@ router.patch(
         },
       });
     } catch (err: any) {
+      console.error("[PATCH /api/applications/:id/submit]", err);
       res
         .status(500)
         .json({ error: err?.message ?? "Failed to submit application" });
@@ -433,19 +553,35 @@ router.patch(
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-      const userId = await resolveUserId(req.userId!);
+      const identifier = req.userId;
+      if (!identifier) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const customUserId = await getCustomUserId(identifier);
+
       const application = await Application.findOne({
-        $or: [{ _id: req.params.id }, { application_id: req.params.id }],
+        $or: [
+          {
+            _id: mongoose.Types.ObjectId.isValid(req.params.id)
+              ? req.params.id
+              : null,
+          },
+          { application_id: req.params.id },
+        ],
       });
 
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
       }
-      if (application.user_id !== userId) {
+
+      if (application.user_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
+
       if (!["Draft", "Submitted"].includes(application.status as string)) {
         res.status(400).json({
           error: "Cannot cancel application",
@@ -455,7 +591,7 @@ router.patch(
       }
 
       application.status = "Cancelled";
-      (application as any).updated_by = userId;
+      (application as any).updated_by = customUserId;
       await application.save();
 
       res.json({
@@ -464,6 +600,7 @@ router.patch(
         application_id: application.application_id,
       });
     } catch (err: any) {
+      console.error("[PATCH /api/applications/:id/cancel]", err);
       res
         .status(500)
         .json({ error: err?.message ?? "Failed to cancel application" });
