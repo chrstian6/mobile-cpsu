@@ -13,7 +13,6 @@ function RootLayoutNav() {
   // Handle session expiration
   useEffect(() => {
     if (sessionExpired) {
-      // Show alert for session expiration
       Alert.alert(
         "Session Expired",
         "Your session has expired. Please log in again.",
@@ -23,20 +22,16 @@ function RootLayoutNav() {
     }
   }, [sessionExpired]);
 
-  // Original navigation logic - completely preserved
+  // Navigation logic
   useEffect(() => {
     if (isLoading) return;
-
     const prevUser = prevUserRef.current;
     prevUserRef.current = user;
-
     if (user) {
       router.replace("/(tabs)");
     } else if (prevUser !== undefined && prevUser !== null && !user) {
-      // User just logged out → go to login
       router.replace("/(auth)/login");
     } else if (prevUser === undefined && !user) {
-      // App started with no session → go to get started
       router.replace("/");
     }
   }, [user, isLoading]);
@@ -69,6 +64,14 @@ function RootLayoutNav() {
       />
       <Stack.Screen
         name="screens/request-device"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="screens/device-request-status"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="screens/notifications"
         options={{ headerShown: false }}
       />
     </Stack>

@@ -13,13 +13,13 @@ import applicationRoutes from "./routes/applications";
 import authRoutes from "./routes/auth";
 import cardRoutes from "./routes/cards";
 import cashAssistanceRoutes from "./routes/cash-assistance";
+import eventRoutes from "./routes/events";
 import facapiWebviewRoutes from "./routes/faceapi-webview";
-import ocrRoutes from "./routes/ocr";
-import testRouter from "./routes/test";
-
-// NEW: Import items and requests routes
 import itemsRoutes from "./routes/item";
+import notificationRoutes from "./routes/notifications";
+import ocrRoutes from "./routes/ocr";
 import requestsRoutes from "./routes/request";
+import testRouter from "./routes/test";
 
 // ── Validate required env vars ────────────────────────────────────────────────
 const REQUIRED_ENV = ["JWT_SECRET", "JWT_REFRESH_SECRET", "MONGODB_URI"];
@@ -59,12 +59,12 @@ app.use("/api/cards", cardRoutes);
 app.use("/api/ocr", ocrRoutes);
 app.use("/api/applications", applicationRoutes);
 app.use("/api/cash-assistance", cashAssistanceRoutes);
-app.use("/faceapi-webview", facapiWebviewRoutes);
-app.use("/api/test", testRouter);
-
-// NEW: Items and Requests routes
 app.use("/api/items", itemsRoutes);
 app.use("/api/requests", requestsRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/events", eventRoutes);
+app.use("/faceapi-webview", facapiWebviewRoutes);
+app.use("/api/test", testRouter);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get("/", (_req: Request, res: Response) => {
@@ -78,6 +78,8 @@ app.get("/", (_req: Request, res: Response) => {
       cashAssistance: "/api/cash-assistance",
       items: "/api/items",
       requests: "/api/requests",
+      notifications: "/api/notifications",
+      events: "/api/events",
       faceapi: "/faceapi-webview",
       test: "/api/test",
       health: "/health",
@@ -93,7 +95,7 @@ app.get("/health", (_req: Request, res: Response) => {
   });
 });
 
-// ── 404 handler for undefined routes ──────────────────────────────────────────
+// ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
     error: "Route not found",
@@ -116,8 +118,6 @@ mongoose
   .connect(process.env.MONGODB_URI!)
   .then(() => {
     console.log("✅ MongoDB connected");
-
-    // Log all registered routes for debugging
     console.log("\n📋 Registered Routes:");
     console.log("  └─ /api/auth");
     console.log("  └─ /api/cards");
@@ -126,11 +126,12 @@ mongoose
     console.log("  └─ /api/cash-assistance");
     console.log("  └─ /api/items");
     console.log("  └─ /api/requests");
+    console.log("  └─ /api/notifications");
+    console.log("  └─ /api/events");
     console.log("  └─ /faceapi-webview");
     console.log("  └─ /api/test");
     console.log("  └─ /health");
     console.log();
-
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📱 API Base URL: http://localhost:${PORT}`);

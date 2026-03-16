@@ -1,6 +1,9 @@
 // backend/src/models/Cards.ts
 import mongoose, { Document, Schema } from "mongoose";
 
+// PWD ID card_id format assigned by admin: 00-0000-000-0000000
+const CARD_ID_REGEX = /^\d{2}-\d{4}-\d{3}-\d{7}$/;
+
 export interface ICard extends Document {
   card_id: string | null; // null until admin assigns the real PWD ID number
   user_id: string;
@@ -31,9 +34,9 @@ export interface ICard extends Document {
 
 const CardSchema = new Schema<ICard>(
   {
-    // card_id is assigned by the admin after review — null on initial request.
-    // sparse: true allows multiple documents to have null without violating the
-    // unique constraint (a normal unique index treats null as a duplicate).
+    // card_id is null on initial request.
+    // Admin assigns the real PWD ID number in the format: 00-0000-000-0000000
+    // sparse: true allows multiple null values without violating the unique constraint.
     card_id: {
       type: String,
       required: false,
@@ -42,6 +45,15 @@ const CardSchema = new Schema<ICard>(
       sparse: true,
       index: true,
       trim: true,
+      validate: {
+        validator: function (v: string | null) {
+          // Allow null (pending admin assignment) or valid format
+          if (v === null || v === undefined) return true;
+          return CARD_ID_REGEX.test(v);
+        },
+        message:
+          "Card ID must follow the format 00-0000-000-0000000 (assigned by admin)",
+      },
     },
     user_id: {
       type: String,

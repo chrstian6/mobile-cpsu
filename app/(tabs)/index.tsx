@@ -8,14 +8,17 @@ import {
   AlertCircle,
   AlertTriangle,
   Bell,
+  Calendar,
   CheckCircle2,
   ChevronRight,
   Clock,
   FileText,
+  MapPin,
   XCircle,
 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Dimensions,
   FlatList,
   Image,
@@ -31,6 +34,8 @@ const EXPRESS_API_BASE =
   process.env.EXPO_PUBLIC_EXPRESS_URL || "http://192.168.1.194:3001";
 const { width } = Dimensions.get("window");
 
+// ── Static data ───────────────────────────────────────────────────────────────
+
 const ads = [
   {
     id: 1,
@@ -43,33 +48,6 @@ const ads = [
   {
     id: 3,
     uri: "https://ncda.gov.ph/wp-content/uploads/2024/06/Tarpaulin-NDRW-final-1-scaled.jpg",
-  },
-];
-
-const banners = [
-  {
-    id: 1,
-    title: "Medical Mission",
-    description: "Free check-up and medicines for all registered PWDs",
-    date: "March 15, 2024",
-    location: "PDAO Office",
-    tag: "Health",
-  },
-  {
-    id: 2,
-    title: "Assistance Distribution",
-    description: "Monthly financial assistance disbursement",
-    date: "March 20, 2024",
-    location: "Municipal Hall",
-    tag: "Financial",
-  },
-  {
-    id: 3,
-    title: "PWD Registration",
-    description: "New applicants welcome every Friday",
-    date: "Every Friday",
-    location: "PDAO Office",
-    tag: "Registration",
   },
 ];
 
@@ -101,7 +79,6 @@ const announcements = [
   },
 ];
 
-// Services with routes - Updated to include Request Devices
 const services: {
   id: number;
   tag: string;
@@ -121,9 +98,40 @@ const services: {
     tag: "Equipment",
     title: "Request\nDevices",
     description: "Wheelchair, cane, and other devices",
-    route: "/screens/request-device", // This links to the request device screen
+    route: "/screens/request-device",
   },
 ];
+
+// ── Event type ────────────────────────────────────────────────────────────────
+
+interface IEvent {
+  _id: string;
+  title: string;
+  date: string;
+  time?: string;
+  location?: string;
+  description: string;
+  year: string;
+  isActive: boolean;
+}
+
+// ── Event banner color palette — cycles by index ──────────────────────────────
+
+const EVENT_PALETTES = [
+  { bg: "bg-green-800", tag: "text-green-300", meta: "text-white/40" },
+  { bg: "bg-blue-800", tag: "text-blue-300", meta: "text-white/40" },
+  { bg: "bg-purple-800", tag: "text-purple-300", meta: "text-white/40" },
+  { bg: "bg-amber-700", tag: "text-amber-300", meta: "text-white/40" },
+];
+
+const formatEventDate = (dateStr: string): string =>
+  new Date(dateStr).toLocaleDateString("en-PH", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+// ── Status config ─────────────────────────────────────────────────────────────
 
 type UserStatus =
   | "loading"
@@ -325,11 +333,12 @@ const getStatusConfig = (s: UserStatus): StatusConfig => {
   }
 };
 
+// ── StatusCard ────────────────────────────────────────────────────────────────
+
 function StatusCard({ userStatus }: { userStatus: UserStatus }) {
   const config = getStatusConfig(userStatus);
   const palette = STATUS_PALETTE[config.variant];
   const Icon = config.icon;
-
   return (
     <View
       className={`${palette.bg} border ${palette.border} rounded-2xl overflow-hidden`}
@@ -416,6 +425,8 @@ function StatusCard({ userStatus }: { userStatus: UserStatus }) {
   );
 }
 
+// ── Main Screen ───────────────────────────────────────────────────────────────
+
 export default function HomeScreen() {
   const { user, logout } = useAuthStore();
   const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
@@ -426,14 +437,66 @@ export default function HomeScreen() {
   const [statusCheckDone, setStatusCheckDone] = useState(false);
   const [profileSheetVisible, setProfileSheetVisible] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // ── Events state ──────────────────────────────────────────────────────
+  const [events, setEvents] = useState<IEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(true);
 
   const handleLogout = () => {
     setProfileSheetVisible(false);
-    setTimeout(() => {
-      logout();
-    }, 300);
+    setTimeout(() => logout(), 300);
   };
 
+  // ── Fetch active events ───────────────────────────────────────────────
+  const fetchEvents = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+      if (!token) return;
+
+      const res = await fetch(
+        `${EXPRESS_API_BASE}/api/events?active=true&limit=10`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const list: IEvent[] = Array.isArray(data)
+          ? data
+          : (data.events ?? data.data ?? []);
+        setEvents(list);
+      }
+    } catch (err) {
+      console.log("[home] Events fetch error:", err);
+    } finally {
+      setEventsLoading(false);
+    }
+  }, []);
+
+  // ── Fetch unread count ────────────────────────────────────────────────
+  const fetchUnreadCount = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+      if (!token) return;
+      const res = await fetch(
+        `${EXPRESS_API_BASE}/api/notifications/unread-count`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const count =
+          typeof data.count === "number"
+            ? data.count
+            : typeof data.data?.count === "number"
+              ? data.data.count
+              : 0;
+        setUnreadCount(count);
+      }
+    } catch (err) {
+      console.log("[home] Notification count fetch error:", err);
+    }
+  }, []);
+
+  // ── Check user status ─────────────────────────────────────────────────
   const checkUserStatus = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
@@ -487,28 +550,23 @@ export default function HomeScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await checkUserStatus();
+    await Promise.all([checkUserStatus(), fetchUnreadCount(), fetchEvents()]);
     setRefreshing(false);
-  }, [checkUserStatus]);
+  }, [checkUserStatus, fetchUnreadCount, fetchEvents]);
 
+  // Initial load
   useEffect(() => {
     checkUserStatus();
-  }, [checkUserStatus]);
+    fetchUnreadCount();
+    fetchEvents();
+  }, [checkUserStatus, fetchUnreadCount, fetchEvents]);
 
   useEffect(() => {
     if (user?.is_verified === true && userStatus !== "verified")
       setUserStatus("verified");
   }, [user?.is_verified, userStatus]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const next = (currentBannerIndex + 1) % banners.length;
-      setCurrentBannerIndex(next);
-      bannerRef.current?.scrollToIndex({ index: next, animated: true });
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [currentBannerIndex]);
-
+  // Auto-scroll ads
   useEffect(() => {
     const interval = setInterval(() => {
       const next = (currentAdIndex + 1) % ads.length;
@@ -518,7 +576,25 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, [currentAdIndex]);
 
+  // Auto-scroll events banner — only when events are loaded
+  useEffect(() => {
+    if (events.length <= 1) return;
+    const interval = setInterval(() => {
+      const next = (currentBannerIndex + 1) % events.length;
+      setCurrentBannerIndex(next);
+      bannerRef.current?.scrollToIndex({ index: next, animated: true });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [currentBannerIndex, events.length]);
+
+  // Reset banner index on fresh event load
+  useEffect(() => {
+    setCurrentBannerIndex(0);
+  }, [events.length]);
+
   if (!user) return null;
+
+  // ── Render helpers ────────────────────────────────────────────────────
 
   const renderAd = ({ item }: { item: (typeof ads)[0] }) => (
     <View style={{ width }} className="px-6">
@@ -530,26 +606,128 @@ export default function HomeScreen() {
     </View>
   );
 
-  const renderBanner = ({ item }: { item: (typeof banners)[0] }) => (
-    <View style={{ width: width - 48 }} className="mx-3">
-      <View className="bg-green-800 rounded-2xl p-6">
-        <Text className="text-green-300 text-[11px] font-medium tracking-widest uppercase mb-4">
-          {item.tag}
-        </Text>
-        <Text className="text-white text-[22px] font-bold tracking-tight leading-tight mb-2">
-          {item.title}
-        </Text>
-        <Text className="text-white/50 text-[13px] leading-[19px] mb-5">
-          {item.description}
-        </Text>
-        <View className="flex-row gap-1">
-          <Text className="text-white/35 text-[12px]">{item.date}</Text>
-          <Text className="text-white/35 text-[12px]">·</Text>
-          <Text className="text-white/35 text-[12px]">{item.location}</Text>
+  const renderEventBanner = ({
+    item,
+    index,
+  }: {
+    item: IEvent;
+    index: number;
+  }) => {
+    const palette = EVENT_PALETTES[index % EVENT_PALETTES.length];
+    return (
+      <View style={{ width: width - 48 }} className="mx-3">
+        <View className={`${palette.bg} rounded-2xl p-6`}>
+          {/* Date + time row */}
+          <View className="flex-row items-center gap-2 mb-3">
+            <View className="flex-row items-center gap-1.5">
+              <Calendar size={11} color="rgba(255,255,255,0.55)" />
+              <Text
+                className={`${palette.tag} text-[11px] font-semibold tracking-widest uppercase`}
+              >
+                {formatEventDate(item.date)}
+              </Text>
+            </View>
+            {!!item.time && (
+              <>
+                <Text className="text-white/30 text-[10px]">·</Text>
+                <Text className={`${palette.tag} text-[11px] font-medium`}>
+                  {item.time}
+                </Text>
+              </>
+            )}
+          </View>
+
+          {/* Title */}
+          <Text className="text-white text-[22px] font-bold tracking-tight leading-tight mb-2">
+            {item.title}
+          </Text>
+
+          {/* Description */}
+          <Text
+            className="text-white/50 text-[13px] leading-[19px] mb-5"
+            numberOfLines={2}
+          >
+            {item.description}
+          </Text>
+
+          {/* Location */}
+          {!!item.location && (
+            <View className="flex-row items-center gap-1.5">
+              <MapPin size={12} color="rgba(255,255,255,0.4)" />
+              <Text className={`${palette.meta} text-[12px]`}>
+                {item.location}
+              </Text>
+            </View>
+          )}
         </View>
       </View>
-    </View>
-  );
+    );
+  };
+
+  const renderEventsSection = () => {
+    if (eventsLoading) {
+      return (
+        <View className="items-center justify-center py-10">
+          <ActivityIndicator size="small" color="#166534" />
+          <Text className="text-gray-400 text-[12px] mt-2">
+            Loading events...
+          </Text>
+        </View>
+      );
+    }
+
+    if (events.length === 0) {
+      return (
+        <View className="mx-6 bg-gray-50 rounded-2xl p-6 items-center border border-gray-100">
+          <View className="w-10 h-10 bg-gray-100 rounded-xl items-center justify-center mb-3">
+            <Calendar size={20} color="#9CA3AF" />
+          </View>
+          <Text className="text-gray-500 text-[13px] font-medium text-center">
+            No upcoming events at the moment
+          </Text>
+          <Text className="text-gray-400 text-[11px] text-center mt-1">
+            Check back later for new events
+          </Text>
+        </View>
+      );
+    }
+
+    return (
+      <>
+        <FlatList
+          ref={bannerRef}
+          data={events}
+          renderItem={renderEventBanner}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          pagingEnabled
+          snapToInterval={width - 48}
+          snapToAlignment="center"
+          decelerationRate="fast"
+          onMomentumScrollEnd={(e) =>
+            setCurrentBannerIndex(
+              Math.round(e.nativeEvent.contentOffset.x / (width - 48)),
+            )
+          }
+          keyExtractor={(item) => item._id}
+        />
+        {events.length > 1 && (
+          <View className="flex-row justify-center mt-3 gap-1">
+            {events.map((_, i) => (
+              <View
+                key={i}
+                className={`h-1 rounded-full ${
+                  i === currentBannerIndex
+                    ? "w-5 bg-green-800"
+                    : "w-1 bg-gray-200"
+                }`}
+              />
+            ))}
+          </View>
+        )}
+      </>
+    );
+  };
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={["top"]}>
@@ -566,7 +744,7 @@ export default function HomeScreen() {
           />
         }
       >
-        {/* Header */}
+        {/* ── Header ─────────────────────────────────────────────────────── */}
         <View className="px-6 pt-2 pb-2">
           <View className="flex-row justify-between items-center">
             <Pressable
@@ -577,22 +755,46 @@ export default function HomeScreen() {
               <View className="w-6 h-0.5 bg-gray-800 rounded-full" />
               <View className="w-4 h-0.5 bg-gray-800 rounded-full" />
             </Pressable>
-            <Pressable className="relative">
+
+            {/* Bell with unread dot */}
+            <Pressable
+              className="relative"
+              onPress={() => router.push("/screens/notifications" as any)}
+            >
               <View className="w-10 h-10 items-center justify-center">
                 <Bell size={17} color="#374151" />
               </View>
-              <View className="absolute top-1 right-1 w-2 h-2 rounded-full bg-green-600 border-2 border-white" />
+              {unreadCount > 0 && (
+                <View
+                  className="absolute top-1 right-1 bg-red-500 border-2 border-white rounded-full items-center justify-center"
+                  style={{
+                    minWidth: unreadCount > 9 ? 18 : 14,
+                    height: unreadCount > 9 ? 18 : 14,
+                    paddingHorizontal: unreadCount > 9 ? 3 : 0,
+                  }}
+                >
+                  {unreadCount > 9 ? (
+                    <Text
+                      style={{ fontSize: 9, lineHeight: 12 }}
+                      className="text-white font-bold"
+                    >
+                      9+
+                    </Text>
+                  ) : null}
+                </View>
+              )}
             </Pressable>
           </View>
         </View>
 
+        {/* ── Status Card ────────────────────────────────────────────────── */}
         {statusCheckDone && (
           <View className="px-6 mt-2 mb-4">
             <StatusCard userStatus={userStatus} />
           </View>
         )}
 
-        {/* Ads */}
+        {/* ── Ads ────────────────────────────────────────────────────────── */}
         <View className="mb-1">
           <FlatList
             ref={adRef}
@@ -615,45 +817,32 @@ export default function HomeScreen() {
             {ads.map((_, i) => (
               <View
                 key={i}
-                className={`h-1 rounded-full ${i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"}`}
+                className={`h-1 rounded-full ${
+                  i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"
+                }`}
               />
             ))}
           </View>
         </View>
 
-        {/* Upcoming Events */}
+        {/* ── Upcoming Events (dynamic) ───────────────────────────────────── */}
         <View className="mt-7">
-          <Text className="text-gray-900 text-[16px] font-bold tracking-tight px-6 mb-3">
-            Upcoming Events
-          </Text>
-          <FlatList
-            ref={bannerRef}
-            data={banners}
-            renderItem={renderBanner}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            pagingEnabled
-            snapToInterval={width - 48}
-            snapToAlignment="center"
-            decelerationRate="fast"
-            onMomentumScrollEnd={(e) =>
-              setCurrentBannerIndex(
-                Math.round(e.nativeEvent.contentOffset.x / (width - 48)),
-              )
-            }
-            keyExtractor={(item) => item.id.toString()}
-          />
-          <View className="flex-row justify-center mt-3 gap-1">
-            {banners.map((_, i) => (
-              <View
-                key={i}
-                className={`h-1 rounded-full ${i === currentBannerIndex ? "w-5 bg-green-800" : "w-1 bg-gray-200"}`}
-              />
-            ))}
+          <View className="flex-row items-center justify-between px-6 mb-3">
+            <Text className="text-gray-900 text-[16px] font-bold tracking-tight">
+              Upcoming Events
+            </Text>
+            {!eventsLoading && events.length > 0 && (
+              <View className="bg-green-50 border border-green-200 px-2.5 py-1 rounded-full">
+                <Text className="text-green-700 text-[10px] font-semibold">
+                  {`${events.length} event${events.length !== 1 ? "s" : ""}`}
+                </Text>
+              </View>
+            )}
           </View>
+          {renderEventsSection()}
         </View>
 
-        {/* Services - Request Devices is now linked */}
+        {/* ── Services ───────────────────────────────────────────────────── */}
         <View className="px-6 mt-8">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight mb-3">
             Services
@@ -691,7 +880,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Recent Activities */}
+        {/* ── Recent Activities ───────────────────────────────────────────── */}
         <View className="px-6 mt-8">
           <View className="flex-row justify-between items-center mb-3">
             <Text className="text-gray-900 text-[16px] font-bold tracking-tight">
@@ -708,7 +897,11 @@ export default function HomeScreen() {
             {recentActivities.map((activity, index) => (
               <View
                 key={activity.id}
-                className={`flex-row items-center px-4 py-3.5 bg-white ${index !== recentActivities.length - 1 ? "border-b border-gray-50" : ""}`}
+                className={`flex-row items-center px-4 py-3.5 bg-white ${
+                  index !== recentActivities.length - 1
+                    ? "border-b border-gray-50"
+                    : ""
+                }`}
               >
                 <View className="w-0.5 h-8 bg-gray-200 rounded-full mr-4" />
                 <View className="flex-1">
@@ -727,7 +920,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Announcements */}
+        {/* ── Announcements ───────────────────────────────────────────────── */}
         <View className="px-6 mt-8 mb-10">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight mb-3">
             Announcements
@@ -735,7 +928,11 @@ export default function HomeScreen() {
           {announcements.map((item, index) => (
             <Pressable
               key={item.id}
-              className={`bg-white py-5 ${index !== announcements.length - 1 ? "border-b border-gray-100" : ""}`}
+              className={`bg-white py-5 ${
+                index !== announcements.length - 1
+                  ? "border-b border-gray-100"
+                  : ""
+              }`}
             >
               <View className="flex-row justify-between items-start mb-1.5">
                 <Text className="text-gray-900 text-[14px] font-bold flex-1 mr-4">
@@ -746,7 +943,7 @@ export default function HomeScreen() {
                 </Text>
               </View>
               <Text className="text-gray-400 text-[12px] mb-2.5">
-                {item.date} · {item.location}
+                {`${item.date} · ${item.location}`}
               </Text>
               <Text className="text-gray-500 text-[13px] leading-[19px]">
                 {item.description}

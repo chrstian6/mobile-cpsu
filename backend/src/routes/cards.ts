@@ -48,6 +48,8 @@ const mapSex = (sex: string | undefined): string => {
 // Called from application.tsx after a user's application is Approved.
 // Pulls personal data from the approved application, uploads the 1x1 photo,
 // and creates a Card record pending admin review.
+// card_id is intentionally left null — the admin will assign the real
+// PWD ID number (format: 00-0000-000-0000000) after review.
 router.post(
   "/request-from-application",
   requireAuth,
@@ -169,13 +171,11 @@ router.post(
         .filter(Boolean)
         .join(", ");
 
-      // ── Generate a card_id placeholder (admin will assign the real one) ─────
-      // Format: PDAO-APP-{application_id}-{timestamp}
-      const generatedCardId = `PDAO-APP-${application.application_id}-${timestamp}`;
-
       // ── Create the card ─────────────────────────────────────────────────────
+      // card_id is null — admin will assign the real PWD ID number
+      // after reviewing the request. Format: 00-0000-000-0000000
       const card = new Card({
-        card_id: generatedCardId,
+        card_id: null, // assigned by admin after review
         user_id: customUserId,
         name: fullName,
         barangay: addr?.barangay || "Not detected",
@@ -207,21 +207,20 @@ router.post(
       await card.save();
       console.log("[cards/request-from-application] card saved:", card._id);
 
-      // ── Link card_id on the user record ────────────────────────────────────
-      await User.findOneAndUpdate(
-        { user_id: customUserId },
-        { card_id: generatedCardId, updated_by: customUserId },
-      );
+      // ── Do NOT set card_id on the user yet — admin hasn't assigned it ───────
+      // User.card_id will be updated by the admin route when issuing the card.
 
-      console.log("[cards/request-from-application] user updated with card_id");
+      console.log(
+        "[cards/request-from-application] card request submitted without card_id (pending admin assignment)",
+      );
 
       res.status(201).json({
         success: true,
         message:
-          "Card request submitted successfully. The admin will review and issue your card.",
+          "Card request submitted successfully. The admin will review and issue your PWD ID card.",
         card: {
           _id: card._id,
-          card_id: card.card_id,
+          card_id: card.card_id, // null at this point
           name: card.name,
           status: card.status,
           blood_type: card.blood_type,
@@ -540,9 +539,10 @@ router.post(
         return;
       }
 
-      const sanitizedCardId = card.card_id.replace(/[^a-zA-Z0-9\-]/g, "_");
+      // Use _id as folder name since card_id may still be null (pending admin assignment)
+      const sanitizedId = String(card._id).replace(/[^a-zA-Z0-9\-]/g, "_");
       const sanitizedUserId = customUserId.replace(/[^a-zA-Z0-9\-]/g, "_");
-      const photoPath = `${sanitizedUserId}/${sanitizedCardId}/1x1_photo.jpg`;
+      const photoPath = `${sanitizedUserId}/${sanitizedId}/1x1_photo.jpg`;
 
       console.log("[cards] Uploading 1x1 photo to:", photoPath);
 
@@ -553,7 +553,7 @@ router.post(
       card.updated_by = customUserId;
       await card.save();
 
-      console.log("[cards] 1x1 photo uploaded for card:", card.card_id);
+      console.log("[cards] 1x1 photo uploaded for card:", card._id);
 
       res.json({
         success: true,
@@ -615,12 +615,12 @@ router.get(
 
       const card = await Card.findOne({ user_id: customUserId })
         .select("_id card_id status")
-        .lean<{ _id: string; card_id: string; status: string }>();
+        .lean<{ _id: string; card_id: string | null; status: string }>();
 
       console.log("[cards] Check result:", {
         hasCard: !!card,
         is_verified: user?.is_verified ?? false,
-        cardId: card?.card_id,
+        cardId: card?.card_id ?? "pending admin assignment",
       });
 
       res.json({
