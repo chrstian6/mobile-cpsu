@@ -10,12 +10,10 @@ import {
   ChevronRight,
   Clock,
   FileText,
-  HelpCircle,
   LogOut,
   Mail,
   MapPin,
   Phone,
-  Settings,
   Shield,
   User,
   XCircle,
@@ -189,13 +187,13 @@ function InfoRowStatus({ status }: { status: UserStatus }) {
 interface ProfileContentProps {
   onClose?: () => void;
   showHeader?: boolean;
-  onLogout?: () => void; // Add this prop for external logout handler
+  onLogout?: () => void;
 }
 
 export function ProfileContent({
   onClose,
   showHeader = true,
-  onLogout, // Add this prop
+  onLogout,
 }: ProfileContentProps) {
   const { user, logout } = useAuthStore();
   const [userStatus, setUserStatus] = useState<UserStatus>("loading");
@@ -269,32 +267,17 @@ export function ProfileContent({
 
   const handleLogout = async () => {
     if (isLoggingOut) return;
-
     setIsLoggingOut(true);
-
-    // If an external logout handler is provided (from ProfileSheet), use it
     if (onLogout) {
-      // Close the sheet first if onClose exists
-      if (onClose) {
-        onClose();
-      }
-      // Call the external logout handler
+      if (onClose) onClose();
       onLogout();
       return;
     }
-
-    // Otherwise, handle logout directly (for standalone ProfileContent)
     if (onClose) {
       onClose();
-      // Small delay to allow sheet to close
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-
-    // Perform logout
     await logout();
-
-    // Note: We don't need to set isLoggingOut false here
-    // The component will unmount when redirected to login
   };
 
   const handleMenuNav = (screen: Href) => {
@@ -302,6 +285,7 @@ export function ProfileContent({
     setTimeout(() => router.push(screen), 300);
   };
 
+  // ── Menu items — Settings and Help & Support removed ─────────────────
   const menuItems: { title: string; icon: any; screen: Href }[] = [
     {
       title: "Personal Information",
@@ -309,19 +293,9 @@ export function ProfileContent({
       screen: "/profile/info" as Href,
     },
     {
-      title: "Account Settings",
-      icon: Settings,
-      screen: "/profile/settings" as Href,
-    },
-    {
       title: "Privacy & Security",
       icon: Shield,
       screen: "/profile/privacy" as Href,
-    },
-    {
-      title: "Help & Support",
-      icon: HelpCircle,
-      screen: "/profile/help" as Href,
     },
   ];
 
@@ -355,14 +329,12 @@ export function ProfileContent({
             >
               <User size={44} color="#166534" />
             </View>
-
             <Text className="text-white text-[22px] font-bold tracking-tight">
               {user?.first_name} {user?.last_name}
             </Text>
             <Text className="text-white/50 text-[13px] mt-1">
               {user?.email}
             </Text>
-
             <View className="flex-row mt-3.5 gap-2 items-center">
               <View className="bg-white/15 border border-white/20 px-3 py-1.5 rounded-full">
                 <Text className="text-white text-[11px] font-semibold tracking-wide">

@@ -1,5 +1,4 @@
 // components/profile/ProfileSheet.tsx
-import { useRouter } from "expo-router";
 import { useEffect, useRef } from "react";
 import {
   Animated,
@@ -17,7 +16,7 @@ const { width } = Dimensions.get("window");
 interface ProfileSheetProps {
   visible: boolean;
   onClose: () => void;
-  onLogout: () => void; // Add this prop
+  onLogout: () => void;
   userStatus: any;
   user: any;
 }
@@ -25,12 +24,11 @@ interface ProfileSheetProps {
 export function ProfileSheet({
   visible,
   onClose,
-  onLogout, // Add this prop
+  onLogout,
   userStatus,
   user,
 }: ProfileSheetProps) {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
   const translateX = useRef(new Animated.Value(-width)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
 
@@ -65,15 +63,6 @@ export function ProfileSheet({
     }
   }, [visible]);
 
-  // Handle navigation items that might close the sheet
-  const handleNavigation = (path: string) => {
-    onClose();
-    // Small delay to allow sheet to close before navigation
-    setTimeout(() => {
-      router.push(path as any);
-    }, 300);
-  };
-
   return (
     <Modal
       visible={visible}
@@ -93,7 +82,7 @@ export function ProfileSheet({
         <Pressable style={{ flex: 1 }} onPress={onClose} />
       </Animated.View>
 
-      {/* Sheet Content */}
+      {/* Sheet */}
       <Animated.View
         style={{
           position: "absolute",
@@ -118,32 +107,11 @@ export function ProfileSheet({
           </Text>
         </View>
 
-        {/* Profile Content */}
         <ProfileContent
           onClose={onClose}
           showHeader={false}
-          onLogout={onLogout} // Pass the logout handler
+          onLogout={onLogout}
         />
-
-        {/* Quick Navigation Footer */}
-        <View className="px-5 py-4 border-t border-gray-100">
-          <Pressable
-            onPress={() => handleNavigation("/settings")}
-            className="py-3 px-4 rounded-xl active:bg-gray-100"
-          >
-            <Text className="text-gray-700 text-[14px] font-medium">
-              Settings
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => handleNavigation("/help")}
-            className="py-3 px-4 rounded-xl active:bg-gray-100"
-          >
-            <Text className="text-gray-700 text-[14px] font-medium">
-              Help & Support
-            </Text>
-          </Pressable>
-        </View>
       </Animated.View>
     </Modal>
   );

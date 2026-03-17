@@ -22,7 +22,6 @@ import {
   MapPin,
   Phone,
   RefreshCw,
-  ShieldCheck,
   User,
   XCircle,
   Zap,
@@ -92,6 +91,13 @@ interface Application {
   age?: number;
 }
 
+interface Card {
+  _id: string;
+  card_id: string | null;
+  status: "Active" | "Expired" | "Revoked" | "Pending";
+  date_issued: string;
+}
+
 interface CardDetails {
   blood_type: string;
   emergency_contact_name: string;
@@ -132,6 +138,8 @@ const toBase64 = async (uri: string): Promise<string> => {
     ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
   return `data:${mime};base64,${base64}`;
 };
+
+// ── LiveFaceScanner ───────────────────────────────────────────────────────────
 
 function LiveFaceScanner({
   onFaceCaptured,
@@ -311,6 +319,8 @@ function LiveFaceScanner({
   );
 }
 
+// ── Status config ─────────────────────────────────────────────────────────────
+
 const getStatusConfig = (status: ApplicationStatus) => {
   const configs: Record<ApplicationStatus, any> = {
     Draft: {
@@ -400,6 +410,7 @@ const formatDate = (d: string) => {
     day: "numeric",
   });
 };
+
 const formatDateTime = (d: string) =>
   new Date(d).toLocaleDateString("en-PH", {
     weekday: "short",
@@ -409,6 +420,7 @@ const formatDateTime = (d: string) =>
     hour: "2-digit",
     minute: "2-digit",
   });
+
 const formatFullName = (app: Application) =>
   [
     app.first_name,
@@ -419,6 +431,8 @@ const formatFullName = (app: Application) =>
     .filter(Boolean)
     .join(" ");
 
+// ── Main Screen ───────────────────────────────────────────────────────────────
+
 export default function ApplicationScreen() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
@@ -426,13 +440,15 @@ export default function ApplicationScreen() {
   const [error, setError] = useState<string | null>(null);
   const [selectedApp, setSelectedApp] = useState<Application | null>(null);
 
+  // ── Card state (to detect expiry for renewal) ─────────────────────────
+  const [userCard, setUserCard] = useState<Card | null>(null);
+  const [showRenewalBanner, setShowRenewalBanner] = useState(false);
+
   const webviewRef = useRef<WebView>(null);
   const [webviewReady, setWebviewReady] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [modelProgress, setModelProgress] = useState(0);
 
-  // When models finish loading and the modal is open with a photo already
-  // selected, kick off processIdFace (models weren't ready before).
   useEffect(() => {
     if (
       modelsLoaded &&
@@ -440,7 +456,6 @@ export default function ApplicationScreen() {
       photoBase64Ref.current &&
       !uploadedDescriptorReadyRef.current
     ) {
-      console.log("[modelsLoaded effect] sending processIdFace");
       sendToWebView({
         action: "processIdFace",
         base64: photoBase64Ref.current,
@@ -456,22 +471,17 @@ export default function ApplicationScreen() {
     emergency_contact_number: "",
   });
   const [phoneError, setPhoneError] = useState<string | null>(null);
-
   const [photoUri, setPhotoUri] = useState<string | null>(null);
-  // Ref keeps base64 current in closures without stale state
   const photoBase64Ref = useRef<string | null>(null);
-
   const [showLiveScanner, setShowLiveScanner] = useState(false);
   const [liveUri, setLiveUri] = useState<string | null>(null);
   const [liveDescriptorReady, setLiveDescriptorReady] = useState(false);
   const liveDescriptorReadyRef = useRef(false);
   const [uploadedDescriptorReady, setUploadedDescriptorReady] = useState(false);
   const uploadedDescriptorReadyRef = useRef(false);
-  const verifyFiredRef = useRef(false); // prevents duplicate verify calls
+  const verifyFiredRef = useRef(false);
   const [verificationResult, setVerificationResult] =
     useState<VerificationResult | null>(null);
-  // processing = extracting live descriptor
-  // verifying  = comparing live descriptor vs uploaded photo
   const [faceStep, setFaceStep] = useState<
     "idle" | "processing" | "verifying" | "done"
   >("idle");
@@ -480,11 +490,13 @@ export default function ApplicationScreen() {
   const hasApprovedApplication = applications.some(
     (a) => a.status === "Approved",
   );
+  const hasActiveRenewal = applications.some(
+    (a) =>
+      a.application_type === "Renewal" &&
+      !["Cancelled", "Rejected"].includes(a.status),
+  );
 
   const sendToWebView = useCallback((payload: object) => {
-    // Serialize once into a JS object literal — avoids the double-stringify
-    // bug where photoBase64 (300–800 KB string) gets double-escaped and
-    // silently corrupted when eval'd by the WebView JS engine.
     const action = (payload as any).action ?? "unknown";
     const json = JSON.stringify(payload);
     console.log(`[sendToWebView] action=${action} bytes=${json.length}`);
@@ -506,7 +518,6 @@ export default function ApplicationScreen() {
       } catch {
         return;
       }
-
       switch (msg.type) {
         case "webviewReady":
           setWebviewReady(true);
@@ -524,8 +535,6 @@ export default function ApplicationScreen() {
         case "liveFrameNoFace":
           (LiveFaceScanner as any)._handleFrameResult?.(0);
           break;
-
-        // Live descriptor cached. Auto-verify if uploaded photo descriptor is ready.
         case "liveFinalDone":
           liveDescriptorReadyRef.current = true;
           setLiveDescriptorReady(true);
@@ -537,14 +546,9 @@ export default function ApplicationScreen() {
             sendToWebView({ action: "verify" });
           }
           break;
-
         case "idFaceDone":
           uploadedDescriptorReadyRef.current = true;
           setUploadedDescriptorReady(true);
-          console.log(
-            "[idFaceDone] uploaded photo descriptor ready, liveReady:",
-            liveDescriptorReadyRef.current,
-          );
           if (liveDescriptorReadyRef.current && !verifyFiredRef.current) {
             verifyFiredRef.current = true;
             setFaceStep("verifying");
@@ -555,16 +559,11 @@ export default function ApplicationScreen() {
         case "idFaceError":
           setFaceErrors((p) => ({ ...p, upload: msg.message }));
           break;
-
         case "liveFinalError":
           setFaceErrors((p) => ({ ...p, live: msg.message }));
           setFaceStep("idle");
           break;
-
         case "verifyDone":
-          console.log(
-            `[verifyDone] isMatch=${msg.isMatch} score=${msg.matchScore} distance=${msg.distance}`,
-          );
           setVerificationResult({
             isMatch: msg.isMatch,
             matchScore: msg.matchScore,
@@ -572,13 +571,10 @@ export default function ApplicationScreen() {
           });
           setFaceStep("done");
           break;
-
         case "verifyError":
-          console.log(`[verifyError] ${msg.message}`);
           setFaceErrors((p) => ({ ...p, verify: msg.message }));
           setFaceStep("idle");
           break;
-
         case "debug":
           console.log("[WebView]", msg.message);
           break;
@@ -606,7 +602,6 @@ export default function ApplicationScreen() {
       setFaceStep("processing");
       try {
         const base64 = await toBase64(uri);
-        // Step 1: extract live descriptor → on liveFinalDone, Step 2 fires automatically
         sendToWebView({ action: "processLiveFinal", base64 });
       } catch (err: any) {
         setFaceErrors((p) => ({
@@ -628,6 +623,7 @@ export default function ApplicationScreen() {
     sendToWebView({ action: "verify" });
   }, [liveDescriptorReady, uploadedDescriptorReady, sendToWebView]);
 
+  // ── Fetch applications + card ─────────────────────────────────────────
   const fetchApplications = async () => {
     try {
       const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
@@ -635,13 +631,31 @@ export default function ApplicationScreen() {
         setError("Session expired. Please log in again.");
         return;
       }
-      const res = await fetch(`${EXPRESS_API_BASE}/api/applications/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Failed to fetch applications");
-      const data = await res.json();
-      setApplications(data.applications || []);
-      setError(null);
+
+      const [appRes, cardRes] = await Promise.allSettled([
+        fetch(`${EXPRESS_API_BASE}/api/applications/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        fetch(`${EXPRESS_API_BASE}/api/cards/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ]);
+
+      if (appRes.status === "fulfilled" && appRes.value.ok) {
+        const data = await appRes.value.json();
+        setApplications(data.applications || []);
+        setError(null);
+      } else {
+        throw new Error("Failed to fetch applications");
+      }
+
+      if (cardRes.status === "fulfilled" && cardRes.value.ok) {
+        const data = await cardRes.value.json();
+        const card: Card | null = (data.cards ?? [])[0] ?? null;
+        setUserCard(card);
+        // Show renewal banner if card is expired and no active renewal application
+        setShowRenewalBanner(card?.status === "Expired");
+      }
     } catch {
       setError("Failed to load applications. Pull down to refresh.");
     } finally {
@@ -653,9 +667,52 @@ export default function ApplicationScreen() {
   useEffect(() => {
     fetchApplications();
   }, []);
+
   const onRefresh = () => {
     setRefreshing(true);
     fetchApplications();
+  };
+
+  // ── Renewal handler ───────────────────────────────────────────────────
+  // Renewal = new application pre-typed as "Renewal". The /apply screen
+  // will pre-fill the form from the most recent approved application so
+  // the user only needs to update what has changed.
+  const handleStartRenewal = () => {
+    if (hasActiveRenewal) {
+      Alert.alert(
+        "Renewal In Progress",
+        "You already have an active renewal application. Please wait for it to be processed.",
+        [
+          {
+            text: "View Application",
+            onPress: () => router.push("/screens/application"),
+          },
+        ],
+      );
+      return;
+    }
+
+    const approvedApp = applications.find((a) => a.status === "Approved");
+
+    Alert.alert(
+      "Renew PWD Registration",
+      "This will start a renewal application pre-filled with your current information. You can update any details that have changed.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Start Renewal",
+          onPress: () =>
+            router.push({
+              pathname: "/apply",
+              params: {
+                type: "Renewal",
+                // Pass the approved application id so /apply can pre-fill
+                prefillId: approvedApp?._id ?? "",
+              },
+            }),
+        },
+      ],
+    );
   };
 
   const handleCancelApplication = async (applicationId: string) => {
@@ -696,8 +753,6 @@ export default function ApplicationScreen() {
   const handleContinueDraft = (draftId: string) =>
     router.push({ pathname: "/apply", params: { draftId } });
 
-  // Stores photo and resets face state. Sends processIdFace immediately
-  // if the modal (and WebView) is already open; otherwise onShow handles it.
   const applyPhoto = (uri: string, base64: string) => {
     setPhotoUri(uri);
     photoBase64Ref.current = base64;
@@ -710,14 +765,8 @@ export default function ApplicationScreen() {
     setLiveUri(null);
     setFaceStep("idle");
     setFaceErrors({});
-    // Modal already open → WebView is mounted → send immediately
-    if (showCardModal && modelsLoaded) {
-      console.log(
-        "[applyPhoto] modal open, sending processIdFace immediately, bytes:",
-        base64.length,
-      );
+    if (showCardModal && modelsLoaded)
       sendToWebView({ action: "processIdFace", base64 });
-    }
   };
 
   const pickImage = async () => {
@@ -893,6 +942,7 @@ export default function ApplicationScreen() {
     }
   };
 
+  // ── Render application list item ──────────────────────────────────────
   const renderApplication = ({ item }: { item: Application }) => {
     const sc = getStatusConfig(item.status);
     const Icon = sc.icon;
@@ -912,9 +962,18 @@ export default function ApplicationScreen() {
         <View className="p-4">
           <View className="flex-row justify-between items-start mb-3">
             <View className="flex-1 mr-2">
-              <Text className="text-gray-900 font-bold text-[15px]">
-                {item.application_id}
-              </Text>
+              <View className="flex-row items-center gap-2">
+                <Text className="text-gray-900 font-bold text-[15px]">
+                  {item.application_id}
+                </Text>
+                {item.application_type === "Renewal" && (
+                  <View className="bg-purple-100 px-2 py-0.5 rounded-full">
+                    <Text className="text-purple-700 text-[9px] font-bold">
+                      RENEWAL
+                    </Text>
+                  </View>
+                )}
+              </View>
               <View className="flex-row items-center gap-1 mt-1">
                 <User size={12} color="#9ca3af" />
                 <Text
@@ -959,8 +1018,7 @@ export default function ApplicationScreen() {
             <View className="flex-row items-center gap-2">
               <MapPin size={14} color="#9ca3af" />
               <Text className="text-gray-500 text-[11px]" numberOfLines={1}>
-                {item.residence_address.barangay},{" "}
-                {item.residence_address.municipality}
+                {`${item.residence_address.barangay}, ${item.residence_address.municipality}`}
               </Text>
             </View>
             <ChevronRight size={16} color="#d1d5db" />
@@ -970,6 +1028,7 @@ export default function ApplicationScreen() {
     );
   };
 
+  // ── Application detail view ───────────────────────────────────────────
   if (selectedApp) {
     const sc = getStatusConfig(selectedApp.status);
     const StatusIcon = sc.icon;
@@ -977,7 +1036,6 @@ export default function ApplicationScreen() {
     return (
       <SafeAreaView className="flex-1 bg-white" edges={["top"]}>
         <StatusBar style="dark" />
-
         <View
           style={{
             position: "absolute",
@@ -995,28 +1053,23 @@ export default function ApplicationScreen() {
             javaScriptEnabled
             domStorageEnabled
             onMessage={onWebViewMessage}
-            onError={(e) => {
+            onError={(e) =>
               setFaceErrors((p) => ({
                 ...p,
                 webview: e.nativeEvent.description,
-              }));
-            }}
+              }))
+            }
           />
         </View>
 
+        {/* Card Request Modal */}
         <Modal
           animationType="slide"
           transparent
           visible={showCardModal}
           onRequestClose={() => setShowCardModal(false)}
           onShow={() => {
-            // Modal just became visible — WebView is now mounted and ready.
-            // Send processIdFace if we have a photo but no descriptor yet.
             if (photoBase64Ref.current && !uploadedDescriptorReadyRef.current) {
-              console.log(
-                "[modal onShow] sending processIdFace, photo bytes:",
-                photoBase64Ref.current.length,
-              );
               sendToWebView({
                 action: "processIdFace",
                 base64: photoBase64Ref.current,
@@ -1043,7 +1096,6 @@ export default function ApplicationScreen() {
                   verify your face
                 </Text>
               </View>
-
               <ScrollView
                 className="flex-1 px-5"
                 showsVerticalScrollIndicator={false}
@@ -1064,7 +1116,6 @@ export default function ApplicationScreen() {
                       </Text>
                     </View>
                   )}
-
                   {/* 1x1 Photo */}
                   <Text className="text-gray-400 text-[11px] font-semibold tracking-wider uppercase mb-3">
                     1x1 Photo <Text className="text-red-400">*</Text>
@@ -1131,7 +1182,6 @@ export default function ApplicationScreen() {
                       </View>
                     )}
                   </View>
-
                   {/* Face Verification */}
                   {photoUri && (
                     <>
@@ -1147,7 +1197,6 @@ export default function ApplicationScreen() {
                           they match.
                         </Text>
                       </View>
-
                       {showLiveScanner ? (
                         <LiveFaceScanner
                           onFaceCaptured={handleLiveFaceCaptured}
@@ -1157,7 +1206,6 @@ export default function ApplicationScreen() {
                         />
                       ) : liveUri ? (
                         <View className="mb-4">
-                          {/* Side-by-side: uploaded vs live */}
                           <View className="flex-row gap-3 mb-3">
                             <View className="flex-1 items-center">
                               <Image
@@ -1180,8 +1228,6 @@ export default function ApplicationScreen() {
                               </Text>
                             </View>
                           </View>
-
-                          {/* Processing / verifying status */}
                           {(faceStep === "processing" ||
                             faceStep === "verifying") && (
                             <View className="bg-blue-50 rounded-xl p-3 border border-blue-100 flex-row items-center gap-3">
@@ -1193,8 +1239,6 @@ export default function ApplicationScreen() {
                               </Text>
                             </View>
                           )}
-
-                          {/* Result */}
                           {verificationResult && (
                             <View
                               className={`mt-3 rounded-xl p-3 ${verificationResult.isMatch ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"}`}
@@ -1213,13 +1257,7 @@ export default function ApplicationScreen() {
                                     : "Faces Do Not Match"}
                                 </Text>
                               </View>
-                              <Text className="text-gray-500 text-xs">
-                                Match score:{" "}
-                                {(verificationResult.matchScore * 100).toFixed(
-                                  1,
-                                )}
-                                %
-                              </Text>
+                              <Text className="text-gray-500 text-xs">{`Match score: ${(verificationResult.matchScore * 100).toFixed(1)}%`}</Text>
                               {!verificationResult.isMatch && (
                                 <View className="flex-row gap-2 mt-3">
                                   <Pressable
@@ -1248,7 +1286,6 @@ export default function ApplicationScreen() {
                               )}
                             </View>
                           )}
-
                           {verificationResult?.isMatch && (
                             <Pressable
                               className="mt-2 py-2 rounded-xl border border-gray-200 items-center"
@@ -1282,18 +1319,12 @@ export default function ApplicationScreen() {
                       )}
                     </>
                   )}
-
-                  {faceErrors.live ? (
-                    <Text className="text-xs text-red-600 mb-3">
-                      ⚠ {faceErrors.live}
-                    </Text>
-                  ) : null}
-                  {faceErrors.verify ? (
-                    <Text className="text-xs text-red-600 mb-3">
-                      ⚠ {faceErrors.verify}
-                    </Text>
-                  ) : null}
-
+                  {!!faceErrors.live && (
+                    <Text className="text-xs text-red-600 mb-3">{`⚠ ${faceErrors.live}`}</Text>
+                  )}
+                  {!!faceErrors.verify && (
+                    <Text className="text-xs text-red-600 mb-3">{`⚠ ${faceErrors.verify}`}</Text>
+                  )}
                   {/* Emergency Contact */}
                   <Text className="text-gray-400 text-[11px] font-semibold tracking-wider uppercase mb-3">
                     Emergency Contact Information
@@ -1354,7 +1385,6 @@ export default function ApplicationScreen() {
                       </Text>
                     )}
                   </View>
-
                   {/* Blood Type */}
                   <View className="mb-4">
                     <Text className="text-gray-700 text-sm font-bold mb-2">
@@ -1378,7 +1408,6 @@ export default function ApplicationScreen() {
                       ))}
                     </View>
                   </View>
-
                   <View className="bg-blue-50 rounded-xl p-4 mb-4 border border-blue-100">
                     <Text className="text-blue-700 text-xs">
                       <Text className="font-bold">Note:</Text> The PWD card ID
@@ -1387,7 +1416,6 @@ export default function ApplicationScreen() {
                       ready.
                     </Text>
                   </View>
-
                   <Pressable
                     className={`w-full py-5 rounded-2xl mt-2 flex-row items-center justify-center gap-2 mb-10 ${submittingCard ? "bg-green-700 opacity-80" : "bg-green-900"}`}
                     onPress={handleSendCardDetails}
@@ -1423,6 +1451,7 @@ export default function ApplicationScreen() {
           </View>
         </Modal>
 
+        {/* Application detail header */}
         <View className="px-5 pt-3 pb-4 flex-row items-center gap-3 border-b border-gray-100">
           <Pressable
             onPress={() => setSelectedApp(null)}
@@ -1444,6 +1473,7 @@ export default function ApplicationScreen() {
           className="flex-1 px-5"
           showsVerticalScrollIndicator={false}
         >
+          {/* Status banner */}
           <View className={`${sc.bg} border ${sc.border} rounded-2xl p-4 mt-5`}>
             <View className="flex-row items-center gap-3">
               <View
@@ -1458,13 +1488,12 @@ export default function ApplicationScreen() {
                 <Text className="text-gray-500 text-[12px] mt-0.5">
                   {sc.description}
                 </Text>
-                <Text className="text-gray-400 text-[11px] mt-1">
-                  Last updated: {formatDateTime(selectedApp.updated_at)}
-                </Text>
+                <Text className="text-gray-400 text-[11px] mt-1">{`Last updated: ${formatDateTime(selectedApp.updated_at)}`}</Text>
               </View>
             </View>
           </View>
 
+          {/* Personal Information */}
           <View className="mt-6">
             <Text className="text-gray-400 text-[11px] font-semibold tracking-wider uppercase mb-2">
               Personal Information
@@ -1490,9 +1519,7 @@ export default function ApplicationScreen() {
                 </View>
                 <View className="w-[48%]">
                   <Text className="text-gray-400 text-[10px]">Age</Text>
-                  <Text className="text-gray-800 text-[13px] font-medium">
-                    {selectedApp.age || "N/A"} years old
-                  </Text>
+                  <Text className="text-gray-800 text-[13px] font-medium">{`${selectedApp.age || "N/A"} years old`}</Text>
                 </View>
                 <View className="w-[48%]">
                   <Text className="text-gray-400 text-[10px]">Sex</Text>
@@ -1512,6 +1539,7 @@ export default function ApplicationScreen() {
             </View>
           </View>
 
+          {/* Disability */}
           <View className="mt-6">
             <Text className="text-gray-400 text-[11px] font-semibold tracking-wider uppercase mb-2">
               Disability Information
@@ -1548,6 +1576,7 @@ export default function ApplicationScreen() {
             </View>
           </View>
 
+          {/* Address */}
           <View className="mt-6">
             <Text className="text-gray-400 text-[11px] font-semibold tracking-wider uppercase mb-2">
               Residence Address
@@ -1570,6 +1599,7 @@ export default function ApplicationScreen() {
             </View>
           </View>
 
+          {/* Contact */}
           {(selectedApp.contact_details.mobile_no ||
             selectedApp.contact_details.email ||
             selectedApp.contact_details.landline_no) && (
@@ -1578,7 +1608,7 @@ export default function ApplicationScreen() {
                 Contact Details
               </Text>
               <View className="bg-gray-50 rounded-2xl p-4">
-                {selectedApp.contact_details.mobile_no && (
+                {!!selectedApp.contact_details.mobile_no && (
                   <View className="flex-row items-center gap-3 mb-2">
                     <Phone size={14} color="#166534" />
                     <Text className="text-gray-800 text-[13px]">
@@ -1586,7 +1616,7 @@ export default function ApplicationScreen() {
                     </Text>
                   </View>
                 )}
-                {selectedApp.contact_details.email && (
+                {!!selectedApp.contact_details.email && (
                   <View className="flex-row items-center gap-3 mb-2">
                     <Mail size={14} color="#166534" />
                     <Text className="text-gray-800 text-[13px]">
@@ -1594,7 +1624,7 @@ export default function ApplicationScreen() {
                     </Text>
                   </View>
                 )}
-                {selectedApp.contact_details.landline_no && (
+                {!!selectedApp.contact_details.landline_no && (
                   <View className="flex-row items-center gap-3">
                     <Phone size={14} color="#166534" />
                     <Text className="text-gray-800 text-[13px]">
@@ -1606,6 +1636,7 @@ export default function ApplicationScreen() {
             </View>
           )}
 
+          {/* Employment */}
           {(selectedApp.educational_attainment ||
             selectedApp.employment_status) && (
             <View className="mt-6">
@@ -1613,7 +1644,7 @@ export default function ApplicationScreen() {
                 Employment & Education
               </Text>
               <View className="bg-gray-50 rounded-2xl p-4">
-                {selectedApp.educational_attainment && (
+                {!!selectedApp.educational_attainment && (
                   <View className="flex-row justify-between items-center mb-2">
                     <Text className="text-gray-500 text-[12px]">Education</Text>
                     <Text className="text-gray-800 text-[13px] font-medium">
@@ -1621,7 +1652,7 @@ export default function ApplicationScreen() {
                     </Text>
                   </View>
                 )}
-                {selectedApp.employment_status && (
+                {!!selectedApp.employment_status && (
                   <View className="flex-row justify-between items-center">
                     <Text className="text-gray-500 text-[12px]">
                       Employment
@@ -1636,6 +1667,7 @@ export default function ApplicationScreen() {
             </View>
           )}
 
+          {/* Documents */}
           {(selectedApp.medical_certificate_url ||
             selectedApp.photo_1x1_url) && (
             <View className="mt-6">
@@ -1643,7 +1675,7 @@ export default function ApplicationScreen() {
                 Documents
               </Text>
               <View className="bg-gray-50 rounded-2xl p-4">
-                {selectedApp.photo_1x1_url && (
+                {!!selectedApp.photo_1x1_url && (
                   <Pressable
                     className="flex-row items-center gap-3 mb-3"
                     onPress={() => {}}
@@ -1657,7 +1689,7 @@ export default function ApplicationScreen() {
                     <ChevronRight size={14} color="#9ca3af" />
                   </Pressable>
                 )}
-                {selectedApp.medical_certificate_url && (
+                {!!selectedApp.medical_certificate_url && (
                   <Pressable
                     className="flex-row items-center gap-3"
                     onPress={() => {}}
@@ -1675,6 +1707,7 @@ export default function ApplicationScreen() {
             </View>
           )}
 
+          {/* Timeline */}
           <View className="mt-6">
             <Text className="text-gray-400 text-[11px] font-semibold tracking-wider uppercase mb-2">
               Timeline
@@ -1696,6 +1729,7 @@ export default function ApplicationScreen() {
             </View>
           </View>
 
+          {/* Action buttons */}
           <View className="mt-8 mb-10 gap-3">
             {selectedApp.status === "Draft" && (
               <Pressable
@@ -1741,9 +1775,12 @@ export default function ApplicationScreen() {
     );
   }
 
+  // ── Application list view ─────────────────────────────────────────────
   return (
     <SafeAreaView className="flex-1 bg-gray-50" edges={["top", "bottom"]}>
       <StatusBar style="dark" />
+
+      {/* Header */}
       <View className="px-5 pt-3 pb-4 flex-row items-center gap-3 border-b border-gray-100 bg-white">
         <Pressable
           onPress={() => router.back()}
@@ -1769,6 +1806,50 @@ export default function ApplicationScreen() {
         )}
       </View>
 
+      {/* ── Renewal banner — shown when card is Expired ────────────────── */}
+      {showRenewalBanner && !hasActiveRenewal && !loading && (
+        <View className="mx-4 mt-4">
+          <Pressable
+            onPress={handleStartRenewal}
+            className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex-row items-center gap-3"
+          >
+            <View className="w-10 h-10 bg-amber-100 rounded-xl items-center justify-center">
+              <RefreshCw size={18} color="#D97706" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-amber-800 font-bold text-[14px]">
+                Your PWD ID has expired
+              </Text>
+              <Text className="text-amber-600 text-[12px] mt-0.5">
+                Tap here to start a renewal — your information will be
+                pre-filled
+              </Text>
+            </View>
+            <ChevronRight size={18} color="#D97706" />
+          </Pressable>
+        </View>
+      )}
+
+      {/* Active renewal notice */}
+      {showRenewalBanner && hasActiveRenewal && !loading && (
+        <View className="mx-4 mt-4">
+          <View className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex-row items-center gap-3">
+            <View className="w-10 h-10 bg-blue-100 rounded-xl items-center justify-center">
+              <Clock size={18} color="#2563EB" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-blue-800 font-bold text-[14px]">
+                Renewal In Progress
+              </Text>
+              <Text className="text-blue-600 text-[12px] mt-0.5">
+                Your renewal application is being processed
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* List */}
       {loading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#166534" />
@@ -1841,9 +1922,7 @@ export default function ApplicationScreen() {
           ListHeaderComponent={
             <View className="mb-4">
               <Text className="text-gray-400 text-[12px] font-medium">
-                {applications.length}{" "}
-                {applications.length === 1 ? "application" : "applications"}{" "}
-                found
+                {`${applications.length} ${applications.length === 1 ? "application" : "applications"} found`}
               </Text>
             </View>
           }

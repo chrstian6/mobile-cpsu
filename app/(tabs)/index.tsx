@@ -1,5 +1,6 @@
 // app/(tabs)/index.tsx
 import { ProfileSheet } from "@/components/profile/ProfileSheet";
+import { fetchAllActivities } from "@/lib/activities";
 import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
 import { router } from "expo-router";
@@ -12,8 +13,12 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock,
+  CreditCard,
   FileText,
+  Heart,
   MapPin,
+  Package,
+  PhilippinePeso,
   XCircle,
 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -49,17 +54,6 @@ const ads = [
     id: 3,
     uri: "https://ncda.gov.ph/wp-content/uploads/2024/06/Tarpaulin-NDRW-final-1-scaled.jpg",
   },
-];
-
-const recentActivities = [
-  { id: 1, action: "New registration", name: "Maria Santos", time: "2h ago" },
-  {
-    id: 2,
-    action: "Application approved",
-    name: "Juan Dela Cruz",
-    time: "5h ago",
-  },
-  { id: 3, action: "ID claimed", name: "Pedro Penduko", time: "1d ago" },
 ];
 
 const announcements = [
@@ -102,6 +96,92 @@ const services: {
   },
 ];
 
+// ── Activity type ─────────────────────────────────────────────────────────────
+
+type ActivityKind =
+  | "application"
+  | "cash_assistance"
+  | "card"
+  | "device_request";
+
+interface RecentActivity {
+  id: string;
+  kind: ActivityKind;
+  label: string; // e.g. "PWD Application"
+  sublabel: string; // e.g. status or form_id
+  status: string;
+  date: string; // ISO string
+  route?: string;
+}
+
+// ── Activity helpers ──────────────────────────────────────────────────────────
+
+const STATUS_DOT: Record<string, string> = {
+  // greens
+  Active: "bg-emerald-500",
+  Approved: "bg-emerald-500",
+  Completed: "bg-emerald-500",
+  Verified: "bg-emerald-500",
+  // blues
+  Submitted: "bg-blue-400",
+  "In Queue": "bg-blue-400",
+  "Under Review": "bg-blue-400",
+  Processing: "bg-blue-400",
+  // ambers
+  Pending: "bg-amber-400",
+  "Partially Approved": "bg-amber-400",
+  Draft: "bg-amber-400",
+  // reds
+  Rejected: "bg-red-400",
+  Cancelled: "bg-red-400",
+  Suspended: "bg-red-400",
+  // gray fallback
+};
+
+const getDotColor = (status: string) => STATUS_DOT[status] ?? "bg-gray-300";
+
+const KIND_CONFIG: Record<
+  ActivityKind,
+  { icon: any; iconColor: string; iconBg: string; label: string }
+> = {
+  application: {
+    icon: FileText,
+    iconColor: "#2563EB",
+    iconBg: "bg-blue-50",
+    label: "PWD Application",
+  },
+  cash_assistance: {
+    icon: PhilippinePeso,
+    iconColor: "#059669",
+    iconBg: "bg-emerald-50",
+    label: "Cash Assistance",
+  },
+  card: {
+    icon: CreditCard,
+    iconColor: "#7C3AED",
+    iconBg: "bg-purple-50",
+    label: "PWD ID Card",
+  },
+  device_request: {
+    icon: Package,
+    iconColor: "#EA580C",
+    iconBg: "bg-orange-50",
+    label: "Device Request",
+  },
+};
+
+const formatTimeAgo = (dateStr: string): string => {
+  const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(dateStr).toLocaleDateString("en-PH", {
+    month: "short",
+    day: "numeric",
+  });
+};
+
 // ── Event type ────────────────────────────────────────────────────────────────
 
 interface IEvent {
@@ -114,8 +194,6 @@ interface IEvent {
   year: string;
   isActive: boolean;
 }
-
-// ── Event banner color palette — cycles by index ──────────────────────────────
 
 const EVENT_PALETTES = [
   { bg: "bg-green-800", tag: "text-green-300", meta: "text-white/40" },
@@ -443,17 +521,34 @@ export default function HomeScreen() {
   const [events, setEvents] = useState<IEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
 
+  // ── Activities state ──────────────────────────────────────────────────
+  const [activities, setActivities] = useState<RecentActivity[]>([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(true);
+
   const handleLogout = () => {
     setProfileSheetVisible(false);
     setTimeout(() => logout(), 300);
   };
 
-  // ── Fetch active events ───────────────────────────────────────────────
+  // ── Fetch recent activities ───────────────────────────────────────────
+  // Uses the shared fetchAllActivities utility (all 4 sources in parallel),
+  // capped at 5 for the home screen preview.
+  const fetchRecentActivities = useCallback(async () => {
+    try {
+      const data = await fetchAllActivities(5);
+      setActivities(data);
+    } catch (err) {
+      console.log("[home] Activities fetch error:", err);
+    } finally {
+      setActivitiesLoading(false);
+    }
+  }, []);
+
+  // ── Fetch events ──────────────────────────────────────────────────────
   const fetchEvents = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
       if (!token) return;
-
       const res = await fetch(
         `${EXPRESS_API_BASE}/api/events?active=true&limit=10`,
         { headers: { Authorization: `Bearer ${token}` } },
@@ -550,16 +645,22 @@ export default function HomeScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([checkUserStatus(), fetchUnreadCount(), fetchEvents()]);
+    await Promise.all([
+      checkUserStatus(),
+      fetchUnreadCount(),
+      fetchEvents(),
+      fetchRecentActivities(),
+    ]);
     setRefreshing(false);
-  }, [checkUserStatus, fetchUnreadCount, fetchEvents]);
+  }, [checkUserStatus, fetchUnreadCount, fetchEvents, fetchRecentActivities]);
 
   // Initial load
   useEffect(() => {
     checkUserStatus();
     fetchUnreadCount();
     fetchEvents();
-  }, [checkUserStatus, fetchUnreadCount, fetchEvents]);
+    fetchRecentActivities();
+  }, [checkUserStatus, fetchUnreadCount, fetchEvents, fetchRecentActivities]);
 
   useEffect(() => {
     if (user?.is_verified === true && userStatus !== "verified")
@@ -576,7 +677,7 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, [currentAdIndex]);
 
-  // Auto-scroll events banner — only when events are loaded
+  // Auto-scroll events
   useEffect(() => {
     if (events.length <= 1) return;
     const interval = setInterval(() => {
@@ -587,7 +688,6 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, [currentBannerIndex, events.length]);
 
-  // Reset banner index on fresh event load
   useEffect(() => {
     setCurrentBannerIndex(0);
   }, [events.length]);
@@ -617,7 +717,6 @@ export default function HomeScreen() {
     return (
       <View style={{ width: width - 48 }} className="mx-3">
         <View className={`${palette.bg} rounded-2xl p-6`}>
-          {/* Date + time row */}
           <View className="flex-row items-center gap-2 mb-3">
             <View className="flex-row items-center gap-1.5">
               <Calendar size={11} color="rgba(255,255,255,0.55)" />
@@ -636,21 +735,15 @@ export default function HomeScreen() {
               </>
             )}
           </View>
-
-          {/* Title */}
           <Text className="text-white text-[22px] font-bold tracking-tight leading-tight mb-2">
             {item.title}
           </Text>
-
-          {/* Description */}
           <Text
             className="text-white/50 text-[13px] leading-[19px] mb-5"
             numberOfLines={2}
           >
             {item.description}
           </Text>
-
-          {/* Location */}
           {!!item.location && (
             <View className="flex-row items-center gap-1.5">
               <MapPin size={12} color="rgba(255,255,255,0.4)" />
@@ -675,7 +768,6 @@ export default function HomeScreen() {
         </View>
       );
     }
-
     if (events.length === 0) {
       return (
         <View className="mx-6 bg-gray-50 rounded-2xl p-6 items-center border border-gray-100">
@@ -691,7 +783,6 @@ export default function HomeScreen() {
         </View>
       );
     }
-
     return (
       <>
         <FlatList
@@ -716,11 +807,7 @@ export default function HomeScreen() {
             {events.map((_, i) => (
               <View
                 key={i}
-                className={`h-1 rounded-full ${
-                  i === currentBannerIndex
-                    ? "w-5 bg-green-800"
-                    : "w-1 bg-gray-200"
-                }`}
+                className={`h-1 rounded-full ${i === currentBannerIndex ? "w-5 bg-green-800" : "w-1 bg-gray-200"}`}
               />
             ))}
           </View>
@@ -729,10 +816,100 @@ export default function HomeScreen() {
     );
   };
 
+  const renderActivitiesSection = () => {
+    if (activitiesLoading) {
+      return (
+        <View className="bg-white rounded-2xl border border-gray-100 p-6 items-center">
+          <ActivityIndicator size="small" color="#166534" />
+          <Text className="text-gray-400 text-[12px] mt-2">
+            Loading activities...
+          </Text>
+        </View>
+      );
+    }
+
+    if (activities.length === 0) {
+      return (
+        <View className="bg-white rounded-2xl border border-gray-100 p-6 items-center">
+          <View className="w-10 h-10 bg-gray-100 rounded-xl items-center justify-center mb-3">
+            <Heart size={18} color="#9CA3AF" />
+          </View>
+          <Text className="text-gray-500 text-[13px] font-medium text-center">
+            No recent activities
+          </Text>
+          <Text className="text-gray-400 text-[11px] text-center mt-1">
+            Your applications and requests will appear here
+          </Text>
+        </View>
+      );
+    }
+
+    return (
+      <View className="rounded-2xl border border-gray-100 overflow-hidden">
+        {activities.map((activity, index) => {
+          const kc = KIND_CONFIG[activity.kind];
+          const Icon = kc.icon;
+          return (
+            <Pressable
+              key={activity.id}
+              onPress={() =>
+                activity.route && router.push(activity.route as any)
+              }
+              className={`flex-row items-center px-4 py-3.5 bg-white active:bg-gray-50 ${
+                index !== activities.length - 1 ? "border-b border-gray-50" : ""
+              }`}
+            >
+              {/* Kind icon */}
+              <View
+                className={`w-9 h-9 rounded-xl items-center justify-center mr-3 ${kc.iconBg}`}
+              >
+                <Icon size={16} color={kc.iconColor} strokeWidth={2} />
+              </View>
+
+              {/* Text */}
+              <View className="flex-1 min-w-0">
+                <View className="flex-row items-center gap-1.5">
+                  <Text
+                    className="text-gray-800 text-[13px] font-semibold"
+                    numberOfLines={1}
+                  >
+                    {activity.label}
+                  </Text>
+                </View>
+                <Text
+                  className="text-gray-400 text-[11px] mt-0.5"
+                  numberOfLines={1}
+                >
+                  {activity.sublabel}
+                </Text>
+              </View>
+
+              {/* Status + time */}
+              <View className="items-end gap-1 ml-2 shrink-0">
+                <View className="flex-row items-center gap-1.5">
+                  <View
+                    className={`w-1.5 h-1.5 rounded-full ${getDotColor(activity.status)}`}
+                  />
+                  <Text className="text-gray-500 text-[10px] font-medium">
+                    {activity.status}
+                  </Text>
+                </View>
+                <Text className="text-gray-300 text-[10px]">
+                  {formatTimeAgo(activity.date)}
+                </Text>
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    );
+  };
+
   return (
-    <SafeAreaView className="flex-1 bg-white" edges={["top"]}>
+    <SafeAreaView className="flex-1 bg-white" edges={["top", "bottom"]}>
       <ScrollView
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 120 }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -749,14 +926,12 @@ export default function HomeScreen() {
           <View className="flex-row justify-between items-center">
             <Pressable
               onPress={() => setProfileSheetVisible(true)}
-              className="justify-center gap-1.5 py-3 pr-3"
+              className="w-10 h-10 justify-center gap-1.5"
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <View className="w-6 h-0.5 bg-gray-800 rounded-full" />
               <View className="w-4 h-0.5 bg-gray-800 rounded-full" />
             </Pressable>
-
-            {/* Bell with unread dot */}
             <Pressable
               className="relative"
               onPress={() => router.push("/screens/notifications" as any)}
@@ -817,15 +992,13 @@ export default function HomeScreen() {
             {ads.map((_, i) => (
               <View
                 key={i}
-                className={`h-1 rounded-full ${
-                  i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"
-                }`}
+                className={`h-1 rounded-full ${i === currentAdIndex ? "w-4 bg-gray-300" : "w-1 bg-gray-200"}`}
               />
             ))}
           </View>
         </View>
 
-        {/* ── Upcoming Events (dynamic) ───────────────────────────────────── */}
+        {/* ── Upcoming Events ─────────────────────────────────────────────── */}
         <View className="mt-7">
           <View className="flex-row items-center justify-between px-6 mb-3">
             <Text className="text-gray-900 text-[16px] font-bold tracking-tight">
@@ -886,38 +1059,17 @@ export default function HomeScreen() {
             <Text className="text-gray-900 text-[16px] font-bold tracking-tight">
               Recent Activities
             </Text>
-            <Pressable className="flex-row items-center gap-0.5">
+            <Pressable
+              className="flex-row items-center gap-0.5"
+              onPress={() => router.push("/screens/recent-activities" as any)}
+            >
               <Text className="text-green-800 text-[12px] font-medium">
                 View All
               </Text>
               <ChevronRight size={13} color="#166534" />
             </Pressable>
           </View>
-          <View className="rounded-2xl border border-gray-100 overflow-hidden">
-            {recentActivities.map((activity, index) => (
-              <View
-                key={activity.id}
-                className={`flex-row items-center px-4 py-3.5 bg-white ${
-                  index !== recentActivities.length - 1
-                    ? "border-b border-gray-50"
-                    : ""
-                }`}
-              >
-                <View className="w-0.5 h-8 bg-gray-200 rounded-full mr-4" />
-                <View className="flex-1">
-                  <Text className="text-gray-800 text-[13px] font-semibold">
-                    {activity.action}
-                  </Text>
-                  <Text className="text-gray-400 text-[11px] mt-0.5">
-                    {activity.name}
-                  </Text>
-                </View>
-                <Text className="text-gray-300 text-[11px]">
-                  {activity.time}
-                </Text>
-              </View>
-            ))}
-          </View>
+          {renderActivitiesSection()}
         </View>
 
         {/* ── Announcements ───────────────────────────────────────────────── */}
@@ -928,11 +1080,7 @@ export default function HomeScreen() {
           {announcements.map((item, index) => (
             <Pressable
               key={item.id}
-              className={`bg-white py-5 ${
-                index !== announcements.length - 1
-                  ? "border-b border-gray-100"
-                  : ""
-              }`}
+              className={`bg-white py-5 ${index !== announcements.length - 1 ? "border-b border-gray-100" : ""}`}
             >
               <View className="flex-row justify-between items-start mb-1.5">
                 <Text className="text-gray-900 text-[14px] font-bold flex-1 mr-4">

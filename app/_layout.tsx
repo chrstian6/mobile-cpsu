@@ -74,6 +74,14 @@ function RootLayoutNav() {
         name="screens/notifications"
         options={{ headerShown: false }}
       />
+      <Stack.Screen
+        name="screens/recent-activities"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="screens/update-information"
+        options={{ headerShown: false }}
+      />
     </Stack>
   );
 }
