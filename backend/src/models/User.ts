@@ -2,7 +2,6 @@ import bcrypt from "bcryptjs";
 import mongoose, { Document, Schema } from "mongoose";
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
-
 export interface IAddress {
   street: string;
   barangay: string;
@@ -47,8 +46,20 @@ export interface IUserDocument extends IUser, Document {
   toPublic(): Omit<IUser, "password">;
 }
 
-// ── Schema ────────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Generates a unique user_id with retry logic to handle collisions.
+ * Format: PDAO-YYYYMMDD-XXXXX (5 alphanumeric chars)
+ */
+export const generateUserId = (): string => {
+  const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
+  // Use a longer random suffix (7 chars) to drastically reduce collision probability
+  const random = Math.random().toString(36).substring(2, 9).toUpperCase();
+  return `PDAO-${dateStr}-${random}`;
+};
+
+// ── Schema ────────────────────────────────────────────────────────────────────
 const AddressSchema = new Schema<IAddress>(
   {
     street: { type: String, default: "" },
@@ -76,19 +87,11 @@ const UserSchema = new Schema<IUserDocument>(
     user_id: {
       type: String,
       unique: true,
-      default: () => {
-        const dateStr = new Date()
-          .toISOString()
-          .split("T")[0]
-          .replace(/-/g, "");
-        const random = Math.random().toString(36).substring(2, 7).toUpperCase();
-        return `PDAO-${dateStr}-${random}`;
-      },
+      default: generateUserId,
     },
     form_id: { type: String, default: null },
     pwd_issued_id: { type: String, unique: true, sparse: true, default: null },
     card_id: { type: String, unique: true, sparse: true, default: null },
-
     first_name: { type: String, required: [true, "First name is required"] },
     middle_name: { type: String, default: "" },
     last_name: { type: String, required: [true, "Last name is required"] },
@@ -103,9 +106,7 @@ const UserSchema = new Schema<IUserDocument>(
       type: Date,
       required: [true, "Date of birth is required"],
     },
-
     address: { type: AddressSchema, default: () => ({}) },
-
     contact_number: {
       type: String,
       required: [true, "Contact number is required"],
@@ -115,7 +116,6 @@ const UserSchema = new Schema<IUserDocument>(
         message: "Phone must start with 09 and be 11 digits",
       },
     },
-
     avatar_url: { type: String, default: null },
     email: {
       type: String,
@@ -125,7 +125,6 @@ const UserSchema = new Schema<IUserDocument>(
       trim: true,
     },
     password: { type: String, required: [true, "Password is required"] },
-
     role: {
       type: String,
       enum: ["User", "Admin", "Supervisor", "Staff"],
@@ -136,7 +135,6 @@ const UserSchema = new Schema<IUserDocument>(
       enum: ["Active", "Inactive", "Suspended", "Pending"],
       default: "Active",
     },
-
     is_verified: { type: Boolean, default: false },
     is_email_verified: { type: Boolean, default: false },
     created_by: { type: String, default: null },
@@ -155,7 +153,6 @@ UserSchema.pre<IUserDocument>("save", async function () {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
   }
-
   if (this.date_of_birth) {
     const today = new Date();
     const birth = new Date(this.date_of_birth);

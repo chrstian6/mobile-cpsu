@@ -12,9 +12,13 @@ dotenv.config({ path: path.join(__dirname, "../.env") });
 import applicationRoutes from "./routes/applications";
 import authRoutes from "./routes/auth";
 import cardRoutes from "./routes/cards";
-import cashAssistanceRoutes from "./routes/cash-assistance"; // ← NEW
+import cashAssistanceRoutes from "./routes/cash-assistance";
+import eventRoutes from "./routes/events";
 import facapiWebviewRoutes from "./routes/faceapi-webview";
+import itemsRoutes from "./routes/item";
+import notificationRoutes from "./routes/notifications";
 import ocrRoutes from "./routes/ocr";
+import requestsRoutes from "./routes/request";
 import testRouter from "./routes/test";
 
 // ── Validate required env vars ────────────────────────────────────────────────
@@ -54,24 +58,58 @@ app.use("/api/auth", authRoutes);
 app.use("/api/cards", cardRoutes);
 app.use("/api/ocr", ocrRoutes);
 app.use("/api/applications", applicationRoutes);
-app.use("/api/cash-assistance", cashAssistanceRoutes); // ← NEW
+app.use("/api/cash-assistance", cashAssistanceRoutes);
+app.use("/api/items", itemsRoutes);
+app.use("/api/requests", requestsRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/events", eventRoutes);
 app.use("/faceapi-webview", facapiWebviewRoutes);
 app.use("/api/test", testRouter);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get("/", (_req: Request, res: Response) => {
-  res.json({ message: "PDAO API is running" });
+  res.json({
+    message: "PDAO API is running",
+    endpoints: {
+      auth: "/api/auth",
+      cards: "/api/cards",
+      ocr: "/api/ocr",
+      applications: "/api/applications",
+      cashAssistance: "/api/cash-assistance",
+      items: "/api/items",
+      requests: "/api/requests",
+      notifications: "/api/notifications",
+      events: "/api/events",
+      faceapi: "/faceapi-webview",
+      test: "/api/test",
+      health: "/health",
+    },
+  });
 });
+
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
+});
+
+// ── 404 handler ───────────────────────────────────────────────────────────────
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({
+    error: "Route not found",
+    message: "The requested endpoint does not exist",
+  });
 });
 
 // ── Global error handler ──────────────────────────────────────────────────────
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("Unhandled error:", err);
+  console.error("❌ Unhandled error:", err);
   res.status(500).json({
     message: "Internal server error",
     error: process.env.NODE_ENV === "development" ? err.message : undefined,
+    stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
   });
 });
 
@@ -80,7 +118,25 @@ mongoose
   .connect(process.env.MONGODB_URI!)
   .then(() => {
     console.log("✅ MongoDB connected");
-    app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+    console.log("\n📋 Registered Routes:");
+    console.log("  └─ /api/auth");
+    console.log("  └─ /api/cards");
+    console.log("  └─ /api/ocr");
+    console.log("  └─ /api/applications");
+    console.log("  └─ /api/cash-assistance");
+    console.log("  └─ /api/items");
+    console.log("  └─ /api/requests");
+    console.log("  └─ /api/notifications");
+    console.log("  └─ /api/events");
+    console.log("  └─ /faceapi-webview");
+    console.log("  └─ /api/test");
+    console.log("  └─ /health");
+    console.log();
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📱 API Base URL: http://localhost:${PORT}`);
+      console.log(`🔍 Health check: http://localhost:${PORT}/health`);
+    });
   })
   .catch((err) => {
     console.error("❌ MongoDB connection failed:", err.message);

@@ -2,7 +2,8 @@ import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 
 export interface AuthRequest extends Request {
-  userId?: string;
+  userId?: string; // This will now store the custom user_id (PDAO-...)
+  mongoId?: string; // Optional: keep MongoDB ID if needed elsewhere
 }
 
 export const requireAuth = (
@@ -34,10 +35,28 @@ export const requireAuth = (
       return;
     }
 
-    const payload = jwt.verify(token, accessSecret) as { sub: string };
-    console.log("Token verified, userId:", payload.sub);
+    // Verify token and extract both sub and userId if present
+    const payload = jwt.verify(token, accessSecret) as {
+      sub: string;
+      userId?: string; // Optional for backward compatibility
+    };
 
-    req.userId = payload.sub;
+    console.log("Token verified, sub:", payload.sub);
+    if (payload.userId) {
+      console.log("Custom userId found in token:", payload.userId);
+    }
+
+    // Set the custom userId if available, otherwise fallback to sub
+    // This maintains backward compatibility with existing tokens
+    req.userId = payload.userId || payload.sub;
+
+    // Optionally store the MongoDB ID separately if needed
+    if (payload.userId) {
+      req.mongoId = payload.sub;
+    }
+
+    console.log("Setting req.userId to:", req.userId);
+
     next();
   } catch (err: any) {
     console.error("Token verification error:", {

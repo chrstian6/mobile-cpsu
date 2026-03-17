@@ -14,22 +14,13 @@ export const CashAssistanceStatusEnum = z.enum([
 
 export type CashAssistanceStatus = z.infer<typeof CashAssistanceStatusEnum>;
 
-// Inbound POST body validation - MEDICAL CERTIFICATE IS NOW REQUIRED
+// Inbound POST body validation - MEDICAL CERTIFICATE IS REQUIRED, date_needed removed
 export const CreateCashAssistanceSchema = z.object({
   purpose: z
     .string({ error: "Purpose is required." })
     .trim()
     .min(10, "Purpose must be at least 10 characters.")
     .max(1000, "Purpose must not exceed 1000 characters."),
-
-  date_needed: z
-    .string({ error: "Date needed is required." })
-    .refine((val) => !isNaN(Date.parse(val)), {
-      message: "date_needed must be a valid date string.",
-    })
-    .refine((val) => new Date(val) > new Date(), {
-      message: "date_needed must be a future date.",
-    }),
 
   medical_certificate_base64: z
     .string({ error: "Medical certificate is required." })
@@ -64,10 +55,9 @@ export type UpdateCashAssistanceStatusInput = z.infer<
 
 export interface ICashAssistance extends Document {
   form_id: string;
-  user_id: mongoose.Types.ObjectId;
+  user_id: string; // Store custom user_id (PDAO-...)
   purpose: string;
-  medical_certificate_url: string; // Now required (not nullable)
-  date_needed: Date;
+  medical_certificate_url: string;
   status: CashAssistanceStatus;
   created_at: Date;
   updated_at: Date;
@@ -92,9 +82,9 @@ const CashAssistanceSchema = new Schema<ICashAssistance>(
       default: generateFormId,
     },
     user_id: {
-      type: Schema.Types.ObjectId,
-      ref: "User",
+      type: String, // Store custom user_id as string
       required: true,
+      index: true, // Add index for better query performance
     },
     purpose: {
       type: String,
@@ -105,10 +95,6 @@ const CashAssistanceSchema = new Schema<ICashAssistance>(
     },
     medical_certificate_url: {
       type: String,
-      required: true, // Now required
-    },
-    date_needed: {
-      type: Date,
       required: true,
     },
     status: {

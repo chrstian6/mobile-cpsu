@@ -7,6 +7,7 @@ let _supabase: ReturnType<typeof createClient> | null = null;
 export const BUCKETS = {
   PWD_ID_IMAGES: "pwd-id-images",
   MEDICAL_CERTIFICATES: "medical-certificates",
+  PRESCRIPTIONS: "prescriptions", // Added prescriptions bucket
 } as const;
 
 export type BucketName = (typeof BUCKETS)[keyof typeof BUCKETS];
