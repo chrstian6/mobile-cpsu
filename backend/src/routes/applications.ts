@@ -7,44 +7,32 @@ import Application, {
   ApplicationZodSchema,
 } from "../models/Application";
 import User from "../models/User";
+import { BUCKETS, uploadBase64ToSupabase } from "../utils/supabase";
 
 const router = Router();
 
-// Helper to get the custom user_id from either MongoDB _id or custom user_id
-const getCustomUserId = async (identifier: string): Promise<string> => {
-  // Check if the identifier is a valid MongoDB ObjectId
-  const isValidObjectId = mongoose.Types.ObjectId.isValid(identifier);
+// ── User ID helpers ───────────────────────────────────────────────────────────
 
+const getCustomUserId = async (identifier: string): Promise<string> => {
+  const isValidObjectId = mongoose.Types.ObjectId.isValid(identifier);
   if (isValidObjectId) {
-    // If it's a valid ObjectId, find the user by _id and return their custom user_id
     const user = await User.findById(identifier).select("user_id").lean();
-    if (user && (user as any).user_id) {
-      return (user as any).user_id;
-    }
+    if (user && (user as any).user_id) return (user as any).user_id;
   } else {
-    // If it's not a valid ObjectId, assume it's already a custom user_id
-    // But verify it exists in the database
     const user = await User.findOne({ user_id: identifier })
       .select("user_id")
       .lean();
-    if (user && (user as any).user_id) {
-      return (user as any).user_id;
-    }
+    if (user && (user as any).user_id) return (user as any).user_id;
   }
-
-  // If no user found, return the original identifier (though this shouldn't happen)
   console.warn(
     `[getCustomUserId] No user found for identifier: ${identifier}, returning as is`,
   );
   return identifier;
 };
 
-// Helper to get user details using custom user_id
-const getUserDetailsByCustomId = async (customUserId: string): Promise<any> => {
-  return await User.findOne({ user_id: customUserId }).lean();
-};
+const getUserDetailsByCustomId = async (customUserId: string): Promise<any> =>
+  await User.findOne({ user_id: customUserId }).lean();
 
-// Helper to get MongoDB _id from custom user_id (for User.findById operations)
 const getMongoIdFromCustomId = async (
   customUserId: string,
 ): Promise<string | null> => {
@@ -54,7 +42,8 @@ const getMongoIdFromCustomId = async (
   return user ? (user as any)._id.toString() : null;
 };
 
-// ── Helper: format zod errors into a flat readable object ────────────────────
+// ── Zod error formatter ───────────────────────────────────────────────────────
+
 const formatZodErrors = (issues: any[]) =>
   issues.reduce((acc: Record<string, string>, issue: any) => {
     const key = issue.path?.join(".") || "general";
@@ -62,9 +51,82 @@ const formatZodErrors = (issues: any[]) =>
     return acc;
   }, {});
 
+// ── Document upload helper ────────────────────────────────────────────────────
+// Accepts base64 strings (same pattern as cash-assistance).
+// Returns the uploaded URL or throws.
+
+interface UploadedDoc {
+  medical_certificate_url?: string;
+  birth_certificate_url?: string;
+  supporting_docs_urls?: string[];
+}
+
+async function uploadApplicationDocs(
+  userId: string,
+  body: {
+    medical_certificate_base64?: string;
+    birth_certificate_base64?: string;
+    supporting_docs_base64?: string[]; // array of base64 strings
+  },
+): Promise<UploadedDoc> {
+  const result: UploadedDoc = {};
+
+  // Medical certificate
+  if (body.medical_certificate_base64) {
+    const path = `${userId}/${Date.now()}_medical_cert`;
+    const url = await uploadBase64ToSupabase(
+      body.medical_certificate_base64,
+      path,
+      BUCKETS.MEDICAL_CERTIFICATES,
+    );
+    if (!url) throw new Error("Failed to upload medical certificate.");
+    result.medical_certificate_url = url;
+    console.log(`[applications] Medical cert uploaded: ${url}`);
+  }
+
+  // Birth certificate
+  if (body.birth_certificate_base64) {
+    const path = `${userId}/${Date.now()}_birth_cert`;
+    const url = await uploadBase64ToSupabase(
+      body.birth_certificate_base64,
+      path,
+      BUCKETS.SUPPORTING_DOCUMENTS, // reuse supporting docs bucket or add BIRTH_CERTIFICATES bucket
+    );
+    if (!url) throw new Error("Failed to upload birth certificate.");
+    result.birth_certificate_url = url;
+    console.log(`[applications] Birth cert uploaded: ${url}`);
+  }
+
+  // Supporting documents (array)
+  if (body.supporting_docs_base64?.length) {
+    const urls: string[] = [];
+    for (let i = 0; i < body.supporting_docs_base64.length; i++) {
+      const path = `${userId}/${Date.now()}_supporting_${i}`;
+      const url = await uploadBase64ToSupabase(
+        body.supporting_docs_base64[i],
+        path,
+        BUCKETS.SUPPORTING_DOCUMENTS,
+      );
+      if (!url)
+        throw new Error(`Failed to upload supporting document ${i + 1}.`);
+      urls.push(url);
+    }
+    result.supporting_docs_urls = urls;
+    console.log(
+      `[applications] Supporting docs uploaded: ${urls.length} file(s)`,
+    );
+  }
+
+  return result;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/applications
 // Submit a new application (status: Submitted)
+// Body may include:
+//   medical_certificate_base64  — base64 string
+//   birth_certificate_base64    — base64 string
+//   supporting_docs_base64      — string[]
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   "/",
@@ -77,19 +139,15 @@ router.post(
         return;
       }
 
-      // Get the custom user_id
       const customUserId = await getCustomUserId(identifier);
-
-      // Get MongoDB _id for User.findById operations
       const mongoId =
         (await getMongoIdFromCustomId(customUserId)) || identifier;
 
-      // Check if user already has a pending/submitted application
+      // Duplicate check
       const existing = await Application.findOne({
         user_id: customUserId,
         status: { $in: ["Draft", "Submitted", "Under Review"] },
       });
-
       if (existing) {
         res.status(409).json({
           error: "Duplicate application",
@@ -99,12 +157,29 @@ router.post(
         return;
       }
 
+      // Upload documents first (fail fast before DB write)
+      let uploadedDocs: UploadedDoc = {};
+      try {
+        uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
+      } catch (uploadErr: any) {
+        res
+          .status(500)
+          .json({ error: uploadErr.message ?? "Document upload failed." });
+        return;
+      }
+
       // Validate with Zod
       const parsed = ApplicationZodSchema.safeParse({
         ...req.body,
         user_id: customUserId,
         status: "Submitted",
         date_applied: new Date(),
+        ...uploadedDocs, // merge uploaded URLs into validated payload
+        // Merge supporting_docs_urls arrays (existing + newly uploaded)
+        supporting_docs_urls: [
+          ...(req.body.supporting_docs_urls ?? []),
+          ...(uploadedDocs.supporting_docs_urls ?? []),
+        ],
       });
 
       if (!parsed.success) {
@@ -119,10 +194,8 @@ router.post(
         ...parsed.data,
         created_by: customUserId,
       });
-
       await application.save();
 
-      // Link application_id to user.form_id
       await User.findByIdAndUpdate(mongoId, {
         form_id: application.application_id,
         updated_by: customUserId,
@@ -145,6 +218,9 @@ router.post(
           first_name: application.first_name,
           middle_name: application.middle_name,
           types_of_disability: application.types_of_disability,
+          medical_certificate_url: application.medical_certificate_url,
+          birth_certificate_url: (application as any).birth_certificate_url,
+          supporting_docs_urls: application.supporting_docs_urls,
           created_at: application.created_at,
         },
       });
@@ -165,7 +241,7 @@ router.post(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/applications/draft
-// Save a draft (status: Draft) — no required field validation
+// Save a draft — same file upload support
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   "/draft",
@@ -182,17 +258,34 @@ router.post(
       const mongoId =
         (await getMongoIdFromCustomId(customUserId)) || identifier;
 
-      // If draft already exists, update it instead
+      // Upload any provided documents
+      let uploadedDocs: UploadedDoc = {};
+      try {
+        uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
+      } catch (uploadErr: any) {
+        res
+          .status(500)
+          .json({ error: uploadErr.message ?? "Document upload failed." });
+        return;
+      }
+
+      const bodyWithDocs = {
+        ...req.body,
+        user_id: customUserId,
+        ...uploadedDocs,
+        supporting_docs_urls: [
+          ...(req.body.supporting_docs_urls ?? []),
+          ...(uploadedDocs.supporting_docs_urls ?? []),
+        ],
+      };
+
+      // Update existing draft if present
       const existingDraft = await Application.findOne({
         user_id: customUserId,
         status: "Draft",
       });
-
       if (existingDraft) {
-        const parsed = ApplicationUpdateSchema.safeParse({
-          ...req.body,
-          user_id: customUserId,
-        });
+        const parsed = ApplicationUpdateSchema.safeParse(bodyWithDocs);
         if (!parsed.success) {
           res.status(400).json({
             error: "Validation failed",
@@ -212,19 +305,20 @@ router.post(
             _id: existingDraft._id,
             application_id: existingDraft.application_id,
             status: existingDraft.status,
+            medical_certificate_url: existingDraft.medical_certificate_url,
+            birth_certificate_url: (existingDraft as any).birth_certificate_url,
+            supporting_docs_urls: existingDraft.supporting_docs_urls,
             updated_at: existingDraft.updated_at,
           },
         });
         return;
       }
 
-      // Create new draft — use partial schema, only user_id required
+      // New draft
       const parsed = ApplicationUpdateSchema.safeParse({
-        ...req.body,
-        user_id: customUserId,
+        ...bodyWithDocs,
         status: "Draft",
       });
-
       if (!parsed.success) {
         res.status(400).json({
           error: "Validation failed",
@@ -237,9 +331,7 @@ router.post(
         ...parsed.data,
         created_by: customUserId,
       });
-
       await application.save();
-
       await User.findByIdAndUpdate(mongoId, {
         form_id: application.application_id,
         updated_by: customUserId,
@@ -252,6 +344,9 @@ router.post(
           _id: application._id,
           application_id: application.application_id,
           status: application.status,
+          medical_certificate_url: application.medical_certificate_url,
+          birth_certificate_url: (application as any).birth_certificate_url,
+          supporting_docs_urls: application.supporting_docs_urls,
           created_at: application.created_at,
         },
       });
@@ -264,7 +359,6 @@ router.post(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/applications/me
-// Get the current user's application(s)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get(
   "/me",
@@ -276,13 +370,10 @@ router.get(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
       const customUserId = await getCustomUserId(identifier);
-
       const applications = await Application.find({ user_id: customUserId })
         .sort({ created_at: -1 })
         .select("-__v");
-
       res.json({ success: true, applications });
     } catch (err: any) {
       console.error("[GET /api/applications/me]", err);
@@ -295,7 +386,6 @@ router.get(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/applications/me/active
-// Get the single active (non-cancelled/rejected) application
 // ─────────────────────────────────────────────────────────────────────────────
 router.get(
   "/me/active",
@@ -307,16 +397,13 @@ router.get(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
       const customUserId = await getCustomUserId(identifier);
-
       const application = await Application.findOne({
         user_id: customUserId,
         status: { $nin: ["Cancelled", "Rejected"] },
       })
         .sort({ created_at: -1 })
         .select("-__v");
-
       res.json({ success: true, application: application ?? null });
     } catch (err: any) {
       console.error("[GET /api/applications/me/active]", err);
@@ -329,7 +416,6 @@ router.get(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/applications/:id
-// Get a single application by _id or application_id
 // ─────────────────────────────────────────────────────────────────────────────
 router.get(
   "/:id",
@@ -342,7 +428,6 @@ router.get(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
       const customUserId = await getCustomUserId(identifier);
 
       const application = await Application.findOne({
@@ -357,11 +442,9 @@ router.get(
         return;
       }
 
-      // Get user to check role
       const user = await getUserDetailsByCustomId(customUserId);
       const isOwner = application.user_id === customUserId;
       const isStaff = ["Admin", "Supervisor", "Staff"].includes(user?.role);
-
       if (!isOwner && !isStaff) {
         res.status(403).json({ error: "Access denied" });
         return;
@@ -379,7 +462,7 @@ router.get(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/applications/:id
-// Update a Draft application (user can only edit their own Draft)
+// Update a Draft — including document uploads
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id",
@@ -391,7 +474,6 @@ router.patch(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
       const customUserId = await getCustomUserId(identifier);
 
       const application = await Application.findOne({
@@ -404,17 +486,14 @@ router.patch(
           { application_id: req.params.id },
         ],
       });
-
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
       }
-
       if (application.user_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
-
       if (application.status !== "Draft") {
         res.status(400).json({
           error: "Cannot edit application",
@@ -423,11 +502,28 @@ router.patch(
         return;
       }
 
+      // Upload any new documents
+      let uploadedDocs: UploadedDoc = {};
+      try {
+        uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
+      } catch (uploadErr: any) {
+        res
+          .status(500)
+          .json({ error: uploadErr.message ?? "Document upload failed." });
+        return;
+      }
+
       const parsed = ApplicationUpdateSchema.safeParse({
         ...req.body,
         user_id: customUserId,
+        ...uploadedDocs,
+        // Append newly uploaded supporting docs to existing ones
+        supporting_docs_urls: [
+          ...((application as any).supporting_docs_urls ?? []),
+          ...(req.body.supporting_docs_urls ?? []),
+          ...(uploadedDocs.supporting_docs_urls ?? []),
+        ],
       });
-
       if (!parsed.success) {
         res.status(400).json({
           error: "Validation failed",
@@ -446,6 +542,9 @@ router.patch(
           _id: application._id,
           application_id: application.application_id,
           status: application.status,
+          medical_certificate_url: application.medical_certificate_url,
+          birth_certificate_url: (application as any).birth_certificate_url,
+          supporting_docs_urls: application.supporting_docs_urls,
           updated_at: application.updated_at,
         },
       });
@@ -460,7 +559,7 @@ router.patch(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/applications/:id/submit
-// Submit a Draft application → status: Submitted
+// Submit a Draft → Submitted (full validation)
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id/submit",
@@ -472,7 +571,6 @@ router.patch(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
       const customUserId = await getCustomUserId(identifier);
 
       const application = await Application.findOne({
@@ -485,17 +583,14 @@ router.patch(
           { application_id: req.params.id },
         ],
       });
-
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
       }
-
       if (application.user_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
-
       if (application.status !== "Draft") {
         res.status(400).json({
           error: "Only Draft applications can be submitted",
@@ -504,13 +599,27 @@ router.patch(
         return;
       }
 
-      // Full validation before submitting
+      // Upload any documents sent with submit request
+      let uploadedDocs: UploadedDoc = {};
+      try {
+        uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
+      } catch (uploadErr: any) {
+        res
+          .status(500)
+          .json({ error: uploadErr.message ?? "Document upload failed." });
+        return;
+      }
+
       const parsed = ApplicationZodSchema.safeParse({
         ...application.toObject(),
         user_id: customUserId,
         status: "Submitted",
+        ...uploadedDocs,
+        supporting_docs_urls: [
+          ...(application.supporting_docs_urls ?? []),
+          ...(uploadedDocs.supporting_docs_urls ?? []),
+        ],
       });
-
       if (!parsed.success) {
         res.status(400).json({
           error: "Application is incomplete",
@@ -520,9 +629,13 @@ router.patch(
         return;
       }
 
-      application.status = "Submitted";
-      application.date_applied = new Date();
-      (application as any).updated_by = customUserId;
+      Object.assign(application, {
+        ...uploadedDocs,
+        supporting_docs_urls: parsed.data.supporting_docs_urls,
+        status: "Submitted",
+        date_applied: new Date(),
+        updated_by: customUserId,
+      });
       await application.save();
 
       res.json({
@@ -533,6 +646,9 @@ router.patch(
           application_id: application.application_id,
           status: application.status,
           date_applied: application.date_applied,
+          medical_certificate_url: application.medical_certificate_url,
+          birth_certificate_url: (application as any).birth_certificate_url,
+          supporting_docs_urls: application.supporting_docs_urls,
         },
       });
     } catch (err: any) {
@@ -546,7 +662,6 @@ router.patch(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/applications/:id/cancel
-// Cancel a Draft or Submitted application
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id/cancel",
@@ -558,7 +673,6 @@ router.patch(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
       const customUserId = await getCustomUserId(identifier);
 
       const application = await Application.findOne({
@@ -571,17 +685,14 @@ router.patch(
           { application_id: req.params.id },
         ],
       });
-
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
       }
-
       if (application.user_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
-
       if (!["Draft", "Submitted"].includes(application.status as string)) {
         res.status(400).json({
           error: "Cannot cancel application",
