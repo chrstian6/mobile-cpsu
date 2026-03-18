@@ -2,6 +2,8 @@
 import { JWT_ACCESS_TOKEN_KEY } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system";
 import { useRouter } from "expo-router";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -14,6 +16,7 @@ import {
   CreditCard,
   FileText,
   MapPin,
+  Paperclip,
   Phone,
   Send,
   User,
@@ -101,7 +104,7 @@ interface FormState {
   first_name: string;
   middle_name: string;
   suffix: string;
-  date_of_birth: Date | null; // ← Date object, not string
+  date_of_birth: Date | null;
   sex: Sex | "";
   civil_status: CivilStatus | "";
   types_of_disability: TypeOfDisability[];
@@ -144,6 +147,10 @@ interface FormState {
   accom_middle_name: string;
   certifying_physician_name: string;
   certifying_physician_license_no: string;
+  // ── Documents ───────────────────────────────────────────────────────────────
+  medical_certificate_base64: string;
+  birth_certificate_base64: string;
+  supporting_docs_base64: string[];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -157,7 +164,6 @@ const formatDisplayDate = (date: Date | null): string => {
   });
 };
 
-// Max DOB: must be at least 1 year old
 const maxDOB = new Date();
 maxDOB.setFullYear(maxDOB.getFullYear() - 1);
 
@@ -354,6 +360,43 @@ const NameRow = ({
   </View>
 );
 
+// ── Document Picker Row ───────────────────────────────────────────────────────
+
+const DocPickerRow = ({
+  label,
+  fileName,
+  onPress,
+  required,
+}: {
+  label: string;
+  fileName: string;
+  onPress: () => void;
+  required?: boolean;
+}) => (
+  <View className="mb-4">
+    <FieldLabel label={label} required={required} />
+    <Pressable
+      onPress={onPress}
+      className={`flex-row items-center gap-3 border rounded-xl px-4 py-3.5 ${
+        fileName ? "border-green-400 bg-green-50" : "border-gray-200 bg-gray-50"
+      }`}
+    >
+      <Paperclip size={17} color={fileName ? "#16a34a" : "#9ca3af"} />
+      <Text
+        className={`flex-1 text-[13px] ${fileName ? "text-green-700 font-medium" : "text-gray-400"}`}
+        numberOfLines={1}
+      >
+        {fileName || "Tap to upload (PDF or image)"}
+      </Text>
+      {fileName ? (
+        <Text className="text-[10px] text-green-600 font-bold tracking-wider">
+          ATTACHED
+        </Text>
+      ) : null}
+    </Pressable>
+  </View>
+);
+
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
 export default function ApplyScreen() {
@@ -362,6 +405,11 @@ export default function ApplyScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showDOBPicker, setShowDOBPicker] = useState(false);
+
+  // Document display names (for UI only — actual data lives in form state)
+  const [medCertName, setMedCertName] = useState("");
+  const [birthCertName, setBirthCertName] = useState("");
+  const [supportingNames, setSupportingNames] = useState<string[]>([]);
 
   const [form, setForm] = useState<FormState>({
     application_type: "New Applicant",
@@ -412,6 +460,9 @@ export default function ApplyScreen() {
     accom_middle_name: "",
     certifying_physician_name: "",
     certifying_physician_license_no: "",
+    medical_certificate_base64: "",
+    birth_certificate_base64: "",
+    supporting_docs_base64: [],
   });
 
   const setField = (key: keyof FormState) => (val: any) =>
@@ -435,6 +486,265 @@ export default function ApplyScreen() {
     }));
   };
 
+  // ── Document picker helpers ─────────────────────────────────────────────────
+
+  // ── Mime type from file extension (fallback when mimeType is null) ──────────
+  const getMimeFromExtension = (filename: string): string => {
+    const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+    const map: Record<string, string> = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      gif: "image/gif",
+      webp: "image/webp",
+      heic: "image/heic",
+      heif: "image/heif",
+      pdf: "application/pdf",
+    };
+    return map[ext] ?? "application/octet-stream";
+  };
+
+  /**
+   * Reliable document picker that works with both images and PDFs
+   * Uses multiple fallback strategies for maximum compatibility
+   */
+  const pickDoc = async (): Promise<{
+    base64: string;
+    name: string;
+  } | null> => {
+    try {
+      // Show document picker
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["image/*", "application/pdf"],
+        copyToCacheDirectory: true, // This is important!
+      });
+
+      if (result.canceled) {
+        console.log("[pickDoc] User cancelled document picker");
+        return null;
+      }
+
+      if (!result.assets || result.assets.length === 0) {
+        console.log("[pickDoc] No assets returned");
+        return null;
+      }
+
+      const asset = result.assets[0];
+      console.log(
+        `[pickDoc] Selected file: ${asset.name}, URI: ${asset.uri}, Size: ${asset.size}`,
+      );
+
+      // Validate file size (10MB limit)
+      if (asset.size && asset.size > 10 * 1024 * 1024) {
+        Alert.alert(
+          "File Too Large",
+          "Please select a file smaller than 10MB.",
+        );
+        return null;
+      }
+
+      // Determine mime type
+      const mimeType =
+        asset.mimeType && asset.mimeType !== "application/octet-stream"
+          ? asset.mimeType
+          : getMimeFromExtension(asset.name);
+
+      console.log(`[pickDoc] Using mime type: ${mimeType}`);
+
+      // Try multiple methods to read the file
+      let base64String = "";
+
+      // Method 1: Using FileSystem.readAsStringAsync (legacy but reliable)
+      try {
+        const LegacyFileSystem = require("expo-file-system/legacy");
+        base64String = await LegacyFileSystem.readAsStringAsync(asset.uri, {
+          encoding: LegacyFileSystem.EncodingType.Base64,
+        });
+        console.log(
+          `[pickDoc] Method 1 (legacy) succeeded: ${base64String.length} chars`,
+        );
+      } catch (method1Error) {
+        console.log("[pickDoc] Method 1 failed, trying Method 2...");
+
+        // Method 2: Using fetch API
+        try {
+          const response = await fetch(asset.uri);
+          const blob = await response.blob();
+
+          base64String = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = reader.result as string;
+              // FileReader.readAsDataURL returns a complete data URL
+              // We need to extract just the base64 part
+              const base64Data = result.split(",")[1];
+              resolve(base64Data);
+            };
+            reader.onerror = () => reject(new Error("FileReader failed"));
+            reader.readAsDataURL(blob);
+          });
+          console.log(
+            `[pickDoc] Method 2 (fetch) succeeded: ${base64String.length} chars`,
+          );
+        } catch (method2Error) {
+          console.log("[pickDoc] Method 2 failed, trying Method 3...");
+
+          // Method 3: Using the modern File class with base64() for images, arrayBuffer for PDFs
+          try {
+            const file = new FileSystem.File(asset.uri);
+
+            if (mimeType === "application/pdf") {
+              // For PDFs, use arrayBuffer and convert
+              const arrayBuffer = await file.bytes();
+              base64String = btoa(
+                Array.from(new Uint8Array(arrayBuffer))
+                  .map((b) => String.fromCharCode(b))
+                  .join(""),
+              );
+            } else {
+              // For images, use base64() method
+              base64String = await file.base64();
+            }
+            console.log(
+              `[pickDoc] Method 3 (modern File class) succeeded: ${base64String.length} chars`,
+            );
+          } catch (method3Error) {
+            console.error("[pickDoc] All methods failed");
+            throw new Error("Could not read file content with any method");
+          }
+        }
+      }
+
+      // Validate the base64 string
+      if (!base64String || base64String.length < 100) {
+        console.error("[pickDoc] Invalid base64 string - too short");
+        Alert.alert(
+          "Error",
+          "The selected file appears to be invalid. Please try another file.",
+        );
+        return null;
+      }
+
+      // Create the complete data URL with mime type
+      const dataUrl = `data:${mimeType};base64,${base64String}`;
+
+      return {
+        base64: dataUrl,
+        name: asset.name,
+      };
+    } catch (err: any) {
+      console.error("[pickDoc] Error:", err?.message || err);
+
+      Alert.alert(
+        "Upload Failed",
+        "Could not read the selected file. Please make sure the file is not corrupted and try again.",
+        [{ text: "OK" }],
+      );
+      return null;
+    }
+  };
+
+  // Alternative method specifically for PDFs if the above doesn't work
+  const pickPDF = async (): Promise<{
+    base64: string;
+    name: string;
+  } | null> => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["application/pdf"],
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled || !result.assets?.[0]) return null;
+
+      const asset = result.assets[0];
+
+      // Use react-native-fs if available, or fallback to fetch
+      try {
+        // Try using fetch first
+        const response = await fetch(asset.uri);
+        const blob = await response.blob();
+
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            resolve({
+              base64: reader.result as string,
+              name: asset.name,
+            });
+          };
+          reader.onerror = () => reject(new Error("Failed to read PDF"));
+          reader.readAsDataURL(blob);
+        });
+      } catch (fetchError) {
+        console.error("[pickPDF] Fetch failed:", fetchError);
+
+        // Fallback to FileSystem
+        const LegacyFileSystem = require("expo-file-system/legacy");
+        const base64String = await LegacyFileSystem.readAsStringAsync(
+          asset.uri,
+          {
+            encoding: LegacyFileSystem.EncodingType.Base64,
+          },
+        );
+
+        const mimeType = "application/pdf";
+        return {
+          base64: `data:${mimeType};base64,${base64String}`,
+          name: asset.name,
+        };
+      }
+    } catch (err: any) {
+      console.error("[pickPDF] Error:", err);
+      Alert.alert("Error", "Could not read the PDF file.");
+      return null;
+    }
+  };
+
+  const pickMedCert = async () => {
+    const doc = await pickDoc();
+    if (!doc) return;
+
+    setField("medical_certificate_base64")(doc.base64);
+    setMedCertName(doc.name);
+
+    setErrors((prev) => {
+      const newErrors = { ...prev };
+      delete newErrors.medical_certificate;
+      return newErrors;
+    });
+  };
+
+  const pickBirthCert = async () => {
+    const doc = await pickDoc();
+    if (!doc) return;
+
+    setField("birth_certificate_base64")(doc.base64);
+    setBirthCertName(doc.name);
+  };
+
+  const addSupportingDoc = async () => {
+    const doc = await pickDoc();
+    if (!doc) return;
+
+    setForm((p) => ({
+      ...p,
+      supporting_docs_base64: [...p.supporting_docs_base64, doc.base64],
+    }));
+    setSupportingNames((p) => [...p, doc.name]);
+  };
+
+  const removeSupportingDoc = (index: number) => {
+    setForm((p) => ({
+      ...p,
+      supporting_docs_base64: p.supporting_docs_base64.filter(
+        (_, i) => i !== index,
+      ),
+    }));
+    setSupportingNames((p) => p.filter((_, i) => i !== index));
+  };
+  // ── Validation ──────────────────────────────────────────────────────────────
+
   const validate = () => {
     const e: Record<string, string> = {};
     if (!form.last_name.trim()) e.last_name = "Last name is required";
@@ -448,9 +758,13 @@ export default function ApplyScreen() {
     if (!form.municipality.trim()) e.municipality = "Municipality is required";
     if (!form.province.trim()) e.province = "Province is required";
     if (!form.region.trim()) e.region = "Region is required";
+    if (!form.medical_certificate_base64)
+      e.medical_certificate = "Medical certificate is required";
     setErrors(e);
     return Object.keys(e).length === 0;
   };
+
+  // ── Submit ──────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
     if (!validate()) {
@@ -460,13 +774,14 @@ export default function ApplyScreen() {
     setSubmitting(true);
     try {
       const token = await SecureStore.getItemAsync(JWT_ACCESS_TOKEN_KEY);
+
       const payload = {
         application_type: form.application_type,
         last_name: form.last_name,
         first_name: form.first_name,
         middle_name: form.middle_name || "N/A",
         suffix: form.suffix,
-        date_of_birth: form.date_of_birth?.toISOString(), // ← ISO string, reliable for backend
+        date_of_birth: form.date_of_birth?.toISOString(),
         sex: form.sex,
         civil_status: form.civil_status,
         types_of_disability: form.types_of_disability,
@@ -528,6 +843,13 @@ export default function ApplyScreen() {
         certifying_physician_name: form.certifying_physician_name,
         certifying_physician_license_no: form.certifying_physician_license_no,
         status: "Submitted",
+        // ── Documents (base64) ──────────────────────────────────────────────
+        medical_certificate_base64:
+          form.medical_certificate_base64 || undefined,
+        birth_certificate_base64: form.birth_certificate_base64 || undefined,
+        supporting_docs_base64: form.supporting_docs_base64.length
+          ? form.supporting_docs_base64
+          : undefined,
       };
 
       const res = await fetch(`${EXPRESS_API_BASE}/api/applications`, {
@@ -562,6 +884,8 @@ export default function ApplyScreen() {
         <Text className="text-red-600 text-[11px]">{errors[field]}</Text>
       </View>
     ) : null;
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView className="flex-1 bg-gray-50">
@@ -632,7 +956,6 @@ export default function ApplyScreen() {
             title="Personal Information"
             subtitle="Name, date of birth and sex"
           />
-
           <View className="flex-row gap-2 mb-3">
             <View className="flex-1">
               <FieldLabel label="Last Name" required />
@@ -657,7 +980,6 @@ export default function ApplyScreen() {
               <ErrorMsg field="first_name" />
             </View>
           </View>
-
           <View className="flex-row gap-2 mb-3">
             <View className="flex-1">
               <FieldLabel label="Middle Name" />
@@ -680,10 +1002,9 @@ export default function ApplyScreen() {
               />
             </View>
           </View>
-
           <Divider />
 
-          {/* ── Date of Birth — DateTimePicker ── */}
+          {/* Date of Birth */}
           <View className="mt-3 mb-3">
             <FieldLabel label="Date of Birth" required />
             <Pressable
@@ -700,7 +1021,6 @@ export default function ApplyScreen() {
               <Calendar size={16} color="#9ca3af" />
             </Pressable>
             <ErrorMsg field="date_of_birth" />
-
             {showDOBPicker && (
               <DateTimePicker
                 value={form.date_of_birth ?? maxDOB}
@@ -709,14 +1029,11 @@ export default function ApplyScreen() {
                 maximumDate={maxDOB}
                 minimumDate={new Date(1900, 0, 1)}
                 onChange={(_, selectedDate) => {
-                  // On Android the picker closes itself; on iOS keep it open
                   if (Platform.OS === "android") setShowDOBPicker(false);
                   if (selectedDate) setField("date_of_birth")(selectedDate);
                 }}
               />
             )}
-
-            {/* iOS needs an explicit Done button to dismiss the spinner */}
             {showDOBPicker && Platform.OS === "ios" && (
               <Pressable
                 onPress={() => setShowDOBPicker(false)}
@@ -1265,7 +1582,7 @@ export default function ApplyScreen() {
         </View>
 
         {/* ── FIELD 19: Certifying Physician ── */}
-        <View className="bg-white rounded-2xl p-4 mb-6 shadow-sm">
+        <View className="bg-white rounded-2xl p-4 mb-4 shadow-sm">
           <SectionHeader
             icon={FileText}
             number="Field 19"
@@ -1283,6 +1600,72 @@ export default function ApplyScreen() {
             onChange={setField("certifying_physician_license_no")}
             placeholder="License number"
           />
+        </View>
+
+        {/* ── FIELD 20: Upload Documents ── */}
+        <View className="bg-white rounded-2xl p-4 mb-6 shadow-sm">
+          <SectionHeader
+            icon={Paperclip}
+            number="Field 20"
+            title="Upload Documents"
+            subtitle="Medical certificate required · other docs optional"
+          />
+
+          {/* Medical Certificate */}
+          <DocPickerRow
+            label="Medical Certificate"
+            fileName={medCertName}
+            onPress={pickMedCert}
+            required
+          />
+          <ErrorMsg field="medical_certificate" />
+
+          {/* Birth Certificate */}
+          <DocPickerRow
+            label="Birth Certificate"
+            fileName={birthCertName}
+            onPress={pickBirthCert}
+          />
+
+          {/* Supporting Documents */}
+          <View>
+            <FieldLabel label="Supporting Documents" />
+            <Text className="text-[11px] text-gray-400 mb-2 -mt-1">
+              Medical records, referral letters, or other relevant files
+            </Text>
+
+            {supportingNames.map((name, i) => (
+              <View
+                key={i}
+                className="flex-row items-center gap-3 border border-green-300 bg-green-50 rounded-xl px-4 py-3 mb-2"
+              >
+                <Paperclip size={15} color="#16a34a" />
+                <Text
+                  className="flex-1 text-[12px] text-green-700 font-medium"
+                  numberOfLines={1}
+                >
+                  {name}
+                </Text>
+                <Pressable
+                  onPress={() => removeSupportingDoc(i)}
+                  hitSlop={10}
+                  className="p-1"
+                >
+                  <Text className="text-red-400 font-bold text-sm">✕</Text>
+                </Pressable>
+              </View>
+            ))}
+
+            <Pressable
+              onPress={addSupportingDoc}
+              className="flex-row items-center gap-2 border border-dashed border-gray-300 rounded-xl px-4 py-3.5"
+            >
+              <Text className="text-gray-400 text-lg leading-none font-light">
+                +
+              </Text>
+              <Text className="text-[13px] text-gray-400">Add document</Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* ── Submit ── */}

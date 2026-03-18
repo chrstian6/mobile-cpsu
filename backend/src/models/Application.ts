@@ -5,7 +5,6 @@ import { z } from "zod";
 // ── Zod Enums ─────────────────────────────────────────────────────────────────
 
 export const ApplicationTypeEnum = z.enum(["New Applicant", "Renewal"]);
-
 export const TypeOfDisabilityEnum = z.enum([
   "Deaf or Hard of Hearing",
   "Intellectual Disability",
@@ -18,7 +17,6 @@ export const TypeOfDisabilityEnum = z.enum([
   "Cancer (RA11215)",
   "Rare Disease (RA10747)",
 ]);
-
 export const CauseOfDisabilityEnum = z.enum([
   "Congenital / Inborn",
   "Acquired",
@@ -29,7 +27,6 @@ export const CauseOfDisabilityEnum = z.enum([
   "Chronic Illness",
   "Injury",
 ]);
-
 export const CivilStatusEnum = z.enum([
   "Single",
   "Married",
@@ -37,11 +34,8 @@ export const CivilStatusEnum = z.enum([
   "Widow/er",
   "Cohabitation",
 ]);
-
 export const SexEnum = z.enum(["Male", "Female", "Other"]);
-
 export const SuffixEnum = z.enum(["Jr.", "Sr.", "II", "III", "IV", "V", ""]);
-
 export const EducationalAttainmentEnum = z.enum([
   "None",
   "Kindergarten",
@@ -52,22 +46,18 @@ export const EducationalAttainmentEnum = z.enum([
   "Vocational",
   "Post Graduate",
 ]);
-
 export const EmploymentStatusEnum = z.enum([
   "Employed",
   "Unemployed",
   "Self-employed",
 ]);
-
 export const EmploymentCategoryEnum = z.enum(["Government", "Private"]);
-
 export const EmploymentTypeEnum = z.enum([
   "Permanent / Regular",
   "Seasonal",
   "Casual",
   "Emergency",
 ]);
-
 export const OccupationEnum = z.enum([
   "Managers",
   "Professionals",
@@ -81,13 +71,11 @@ export const OccupationEnum = z.enum([
   "Armed Forces Occupations",
   "Others",
 ]);
-
 export const AccomplishedByTypeEnum = z.enum([
   "Applicant",
   "Guardian",
   "Representative",
 ]);
-
 export const ApplicationStatusEnum = z.enum([
   "Draft",
   "Submitted",
@@ -176,88 +164,89 @@ export const AccomplishedBySchema = z.object({
 // ── Main Zod Schema ───────────────────────────────────────────────────────────
 
 export const ApplicationZodSchema = z.object({
-  // ── System ─────────────────────────────────────────────────────────────────
+  // ── System ──────────────────────────────────────────────────────────────────
   application_id: z.string().optional(),
   user_id: z.string().min(1, "user_id is required"),
   pwd_number: z.string().nullable().optional(),
   status: ApplicationStatusEnum.default("Draft"),
   application_type: ApplicationTypeEnum.default("New Applicant"),
 
-  // ── Field 3 ────────────────────────────────────────────────────────────────
+  // ── Field 3 ─────────────────────────────────────────────────────────────────
   date_applied: z.coerce.date().default(() => new Date()),
 
-  // ── Field 4 ────────────────────────────────────────────────────────────────
+  // ── Field 4 ─────────────────────────────────────────────────────────────────
   last_name: z.string().min(1, "Last name is required").trim(),
   first_name: z.string().min(1, "First name is required").trim(),
   middle_name: z.string().trim().default("N/A"),
   suffix: SuffixEnum.default(""),
 
-  // ── Fields 5 & 6 ───────────────────────────────────────────────────────────
+  // ── Fields 5 & 6 ────────────────────────────────────────────────────────────
   date_of_birth: z.coerce.date({ error: "Date of birth is required" }),
   sex: SexEnum,
 
-  // ── Field 7 ────────────────────────────────────────────────────────────────
+  // ── Field 7 ─────────────────────────────────────────────────────────────────
   civil_status: CivilStatusEnum,
 
-  // ── Fields 8 & 9 ───────────────────────────────────────────────────────────
+  // ── Fields 8 & 9 ────────────────────────────────────────────────────────────
   types_of_disability: z
     .array(TypeOfDisabilityEnum)
     .min(1, "At least one type of disability is required"),
   causes_of_disability: z.array(CauseOfDisabilityEnum).default([]),
 
-  // ── Field 10 ───────────────────────────────────────────────────────────────
+  // ── Field 10 ────────────────────────────────────────────────────────────────
   residence_address: ResidenceAddressSchema,
 
-  // ── Field 11 ───────────────────────────────────────────────────────────────
+  // ── Field 11 ────────────────────────────────────────────────────────────────
   contact_details: ContactDetailsSchema.partial().default(() => ({})),
 
-  // ── Field 12 ───────────────────────────────────────────────────────────────
+  // ── Field 12 ────────────────────────────────────────────────────────────────
   educational_attainment: EducationalAttainmentEnum.nullable().optional(),
 
-  // ── Field 13 ───────────────────────────────────────────────────────────────
+  // ── Field 13 ────────────────────────────────────────────────────────────────
   employment_status: EmploymentStatusEnum.nullable().optional(),
   employment_category: EmploymentCategoryEnum.nullable().optional(),
   employment_type: EmploymentTypeEnum.nullable().optional(),
 
-  // ── Field 14 ───────────────────────────────────────────────────────────────
+  // ── Field 14 ────────────────────────────────────────────────────────────────
   occupation: OccupationEnum.nullable().optional(),
   occupation_others: z.string().optional().default(""),
 
-  // ── Field 15 ───────────────────────────────────────────────────────────────
+  // ── Field 15 ────────────────────────────────────────────────────────────────
   organization_info: OrganizationInfoSchema.nullable().optional(),
 
-  // ── Field 16 ───────────────────────────────────────────────────────────────
+  // ── Field 16 ────────────────────────────────────────────────────────────────
   id_references: IdReferencesSchema.partial().default(() => ({})),
 
-  // ── Field 17 ───────────────────────────────────────────────────────────────
+  // ── Field 17 ────────────────────────────────────────────────────────────────
   family_background: FamilyBackgroundSchema.partial().default(() => ({})),
 
-  // ── Field 18 ───────────────────────────────────────────────────────────────
+  // ── Field 18 ────────────────────────────────────────────────────────────────
   accomplished_by: AccomplishedBySchema.partial().default(() => ({})),
 
-  // ── Field 19 ───────────────────────────────────────────────────────────────
+  // ── Field 19 ────────────────────────────────────────────────────────────────
   certifying_physician_name: z.string().optional().default(""),
   certifying_physician_license_no: z.string().optional().default(""),
 
-  // ── Fields 20–24 (admin-only) ──────────────────────────────────────────────
+  // ── Fields 20–24 (admin-only) ───────────────────────────────────────────────
   processing_officer: z.string().nullable().optional(),
   approving_officer: z.string().nullable().optional(),
   encoder: z.string().nullable().optional(),
   reporting_unit: z.string().nullable().optional(),
   control_no: z.string().nullable().optional(),
 
-  // ── Documents ──────────────────────────────────────────────────────────────
+  // ── Documents ───────────────────────────────────────────────────────────────
+  // URLs stored after upload; base64 fields are stripped before DB save.
   medical_certificate_url: z.string().url().nullable().optional(),
-  photo_1x1_url: z.string().url().nullable().optional(),
+  birth_certificate_url: z.string().url().nullable().optional(), // ← NEW
   supporting_docs_urls: z.array(z.string().url()).default([]),
 
-  // ── Review metadata ────────────────────────────────────────────────────────
+  // ── Review metadata ─────────────────────────────────────────────────────────
   reviewed_at: z.coerce.date().nullable().optional(),
   reviewed_by: z.string().nullable().optional(),
   rejection_reason: z.string().nullable().optional(),
   admin_notes: z.string().nullable().optional(),
 
-  // ── Audit ──────────────────────────────────────────────────────────────────
+  // ── Audit ───────────────────────────────────────────────────────────────────
   created_by: z.string().nullable().optional(),
   updated_by: z.string().nullable().optional(),
 });
@@ -271,6 +260,7 @@ export const ApplicationUpdateSchema = ApplicationZodSchema.partial().extend({
 export type IApplication = z.infer<typeof ApplicationZodSchema>;
 
 // ── Document interface for Mongoose ──────────────────────────────────────────
+
 export interface IApplicationDocument extends IApplication, Document {
   age: number; // virtual
 }
@@ -378,7 +368,6 @@ const MongoApplicationSchema = new Schema<IApplicationDocument>(
       required: true,
       default: "New Applicant",
     },
-
     date_applied: { type: Date, default: Date.now },
 
     last_name: { type: String, required: true, trim: true },
@@ -388,7 +377,6 @@ const MongoApplicationSchema = new Schema<IApplicationDocument>(
 
     date_of_birth: { type: Date, required: true },
     sex: { type: String, enum: SexEnum.options, required: true },
-
     civil_status: {
       type: String,
       enum: CivilStatusEnum.options,
@@ -422,7 +410,6 @@ const MongoApplicationSchema = new Schema<IApplicationDocument>(
       enum: [...EducationalAttainmentEnum.options, null],
       default: null,
     },
-
     employment_status: {
       type: String,
       enum: [...EmploymentStatusEnum.options, null],
@@ -438,7 +425,6 @@ const MongoApplicationSchema = new Schema<IApplicationDocument>(
       enum: [...EmploymentTypeEnum.options, null],
       default: null,
     },
-
     occupation: {
       type: String,
       enum: [...OccupationEnum.options, null],
@@ -463,15 +449,18 @@ const MongoApplicationSchema = new Schema<IApplicationDocument>(
     reporting_unit: { type: String, default: null },
     control_no: { type: String, default: null },
 
+    // ── Document URLs ──────────────────────────────────────────────────────────
     medical_certificate_url: { type: String, default: null },
-    photo_1x1_url: { type: String, default: null },
+    birth_certificate_url: { type: String, default: null }, // ← NEW
     supporting_docs_urls: { type: [String], default: [] },
 
+    // ── Review metadata ────────────────────────────────────────────────────────
     reviewed_at: { type: Date, default: null },
     reviewed_by: { type: String, default: null },
     rejection_reason: { type: String, default: null },
     admin_notes: { type: String, default: null },
 
+    // ── Audit ──────────────────────────────────────────────────────────────────
     created_by: { type: String, default: null },
     updated_by: { type: String, default: null },
   },
@@ -481,12 +470,14 @@ const MongoApplicationSchema = new Schema<IApplicationDocument>(
 );
 
 // ── Indexes ───────────────────────────────────────────────────────────────────
+
 MongoApplicationSchema.index({ user_id: 1, status: 1 });
 MongoApplicationSchema.index({ status: 1, date_applied: -1 });
 MongoApplicationSchema.index({ "residence_address.barangay": 1 });
 MongoApplicationSchema.index({ last_name: 1, first_name: 1 });
 
 // ── Virtuals ──────────────────────────────────────────────────────────────────
+
 MongoApplicationSchema.virtual("age").get(function () {
   if (!this.date_of_birth) return null;
   const today = new Date();
@@ -501,6 +492,7 @@ MongoApplicationSchema.set("toJSON", { virtuals: true });
 MongoApplicationSchema.set("toObject", { virtuals: true });
 
 // ── Model ─────────────────────────────────────────────────────────────────────
+
 const Application =
   mongoose.models.Application ||
   mongoose.model<IApplicationDocument>("Application", MongoApplicationSchema);
