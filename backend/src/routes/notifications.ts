@@ -1,12 +1,7 @@
 // backend/src/routes/notifications.ts
 import { Response, Router } from "express";
 import { AuthRequest, requireAuth } from "../middleware/auth";
-import {
-  NotificationModel,
-  createNotification,
-  getUnreadCount,
-  markAllAsRead,  
-} from "../models/Notification";
+import { NotificationModel, createNotification } from "../models/Notification";
 import User from "../models/User";
 
 const router = Router();
@@ -20,8 +15,9 @@ const getUserRole = async (userId: string): Promise<string | undefined> => {
 };
 
 // ── GET /api/notifications/me ─────────────────────────────────────────────────
-// Returns all notifications for the current user (most recent first).
-// Respects role-based visibility: Staff only see Staff-targeted or public notifs.
+// Returns notifications where:
+//   - user_id matches (direct/personal notifications), OR
+//   - target_roles includes the user's role (role-broadcast notifications)
 router.get(
   "/me",
   requireAuth,
@@ -37,11 +33,15 @@ router.get(
       const status = req.query.status as string | undefined;
       const userRole = await getUserRole(userId);
 
-      const query: Record<string, any> = { user_id: userId };
-
-      if (userRole === "Staff") {
-        query.$or = [{ is_public: true }, { target_roles: "Staff" }];
+      // Match direct notifications OR role-targeted notifications
+      const visibilityConditions: any[] = [{ user_id: userId }];
+      if (userRole) {
+        visibilityConditions.push({ target_roles: userRole });
       }
+
+      const query: Record<string, any> = {
+        $or: visibilityConditions,
+      };
 
       if (status && ["unread", "read", "archived"].includes(status)) {
         query.status = status;
@@ -67,8 +67,6 @@ router.get(
 );
 
 // ── GET /api/notifications/unread-count ───────────────────────────────────────
-// Returns only the unread count for the current user.
-// Used by the home screen bell icon to show/hide the red dot.
 router.get(
   "/unread-count",
   requireAuth,
@@ -81,14 +79,18 @@ router.get(
       }
 
       const userRole = await getUserRole(userId);
-      const result = await getUnreadCount(userId, userRole);
 
-      if (!result.success) {
-        res.status(500).json({ error: result.error });
-        return;
+      const visibilityConditions: any[] = [{ user_id: userId }];
+      if (userRole) {
+        visibilityConditions.push({ target_roles: userRole });
       }
 
-      res.json({ success: true, count: result.count });
+      const count = await NotificationModel.countDocuments({
+        $or: visibilityConditions,
+        status: "unread",
+      });
+
+      res.json({ success: true, count });
     } catch (err: any) {
       console.error("[GET /api/notifications/unread-count] Error:", err);
       res
@@ -99,7 +101,6 @@ router.get(
 );
 
 // ── PATCH /api/notifications/mark-all-read ────────────────────────────────────
-// Marks all unread notifications as read for the current user.
 router.patch(
   "/mark-all-read",
   requireAuth,
@@ -112,12 +113,16 @@ router.patch(
       }
 
       const userRole = await getUserRole(userId);
-      const result = await markAllAsRead(userId, userRole);
 
-      if (!result.success) {
-        res.status(500).json({ error: result.error });
-        return;
+      const visibilityConditions: any[] = [{ user_id: userId }];
+      if (userRole) {
+        visibilityConditions.push({ target_roles: userRole });
       }
+
+      await NotificationModel.updateMany(
+        { $or: visibilityConditions, status: "unread" },
+        { $set: { status: "read", read_at: new Date() } },
+      );
 
       res.json({ success: true, message: "All notifications marked as read" });
     } catch (err: any) {
@@ -130,7 +135,6 @@ router.patch(
 );
 
 // ── PATCH /api/notifications/:notificationId/read ─────────────────────────────
-// Marks a single notification as read.
 router.patch(
   "/:notificationId/read",
   requireAuth,
@@ -143,10 +147,17 @@ router.patch(
       }
 
       const { notificationId } = req.params;
+      const userRole = await getUserRole(userId);
+
+      // Allow marking as read if it's a direct notification OR role-targeted
+      const visibilityConditions: any[] = [{ user_id: userId }];
+      if (userRole) {
+        visibilityConditions.push({ target_roles: userRole });
+      }
 
       const notification = await NotificationModel.findOne({
         notification_id: notificationId,
-        user_id: userId,
+        $or: visibilityConditions,
       });
 
       if (!notification) {
@@ -169,7 +180,6 @@ router.patch(
 );
 
 // ── PATCH /api/notifications/:notificationId/archive ─────────────────────────
-// Archives a notification (hides it from the default list without deleting).
 router.patch(
   "/:notificationId/archive",
   requireAuth,
@@ -182,10 +192,16 @@ router.patch(
       }
 
       const { notificationId } = req.params;
+      const userRole = await getUserRole(userId);
+
+      const visibilityConditions: any[] = [{ user_id: userId }];
+      if (userRole) {
+        visibilityConditions.push({ target_roles: userRole });
+      }
 
       const notification = await NotificationModel.findOne({
         notification_id: notificationId,
-        user_id: userId,
+        $or: visibilityConditions,
       });
 
       if (!notification) {
@@ -208,7 +224,6 @@ router.patch(
 );
 
 // ── DELETE /api/notifications/:notificationId ─────────────────────────────────
-// Hard-deletes a notification. Users can only delete their own.
 router.delete(
   "/:notificationId",
   requireAuth,
@@ -221,10 +236,16 @@ router.delete(
       }
 
       const { notificationId } = req.params;
+      const userRole = await getUserRole(userId);
+
+      const visibilityConditions: any[] = [{ user_id: userId }];
+      if (userRole) {
+        visibilityConditions.push({ target_roles: userRole });
+      }
 
       const result = await NotificationModel.deleteOne({
         notification_id: notificationId,
-        user_id: userId,
+        $or: visibilityConditions,
       });
 
       if (result.deletedCount === 0) {
@@ -255,9 +276,8 @@ router.post(
         return;
       }
 
-      // Only Admin / Supervisor / Staff may create notifications
       const creatorRole = await getUserRole(creatorId);
-      const allowedRoles = ["Admin", "Supervisor", "Staff"];
+      const allowedRoles = ["Admin", "Supervisor", "Staff", "MSWD-CSWDO-PDAO"];
       if (!creatorRole || !allowedRoles.includes(creatorRole)) {
         res.status(403).json({ error: "Forbidden: Insufficient permissions" });
         return;

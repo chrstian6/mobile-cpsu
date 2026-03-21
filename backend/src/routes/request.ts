@@ -5,51 +5,39 @@ import { AuthRequest, requireAuth } from "../middleware/auth";
 import { ItemModel } from "../models/Item";
 import { RequestModel } from "../models/Request";
 import User from "../models/User";
+import { notifyAdmins } from "../utils/notificationHelper";
 import { BUCKETS, uploadBase64ToSupabase } from "../utils/supabase";
 
 const router = Router();
 
-// Helper to get the custom user_id from either MongoDB _id or custom user_id
 const getCustomUserId = async (identifier: string): Promise<string> => {
-  // Check if the identifier is a valid MongoDB ObjectId
   const isValidObjectId = mongoose.Types.ObjectId.isValid(identifier);
-
   if (isValidObjectId) {
-    // If it's a valid ObjectId, find the user by _id and return their custom user_id
     const user = (await User.findById(identifier)
       .select("user_id")
       .lean()) as any;
-    if (user && user.user_id) {
-      return user.user_id;
-    }
+    if (user?.user_id) return user.user_id;
   } else {
-    // If it's not a valid ObjectId, assume it's already a custom user_id
-    // But verify it exists in the database
     const user = (await User.findOne({ user_id: identifier })
       .select("user_id")
       .lean()) as any;
-    if (user) {
-      return user.user_id;
-    }
+    if (user) return user.user_id;
   }
-
-  // If no user found, return the original identifier (though this shouldn't happen)
   return identifier;
 };
 
-// Helper to get user details using custom user_id
-const getUserDetailsByCustomId = async (customUserId: string): Promise<any> => {
-  return await User.findOne({ user_id: customUserId }).lean();
-};
+const getUserDetailsByCustomId = async (customUserId: string): Promise<any> =>
+  await User.findOne({ user_id: customUserId }).lean();
 
-// POST /api/requests - Create a new request
+// ── POST /api/requests — Create a new request
+// 🔔 Notifies admins on success
+// ─────────────────────────────────────────────────────────────────────────────
 router.post(
   "/",
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     const session = await mongoose.startSession();
     session.startTransaction();
-
     try {
       const identifier = req.userId;
       if (!identifier) {
@@ -57,10 +45,7 @@ router.post(
         return;
       }
 
-      // Always get the custom user_id
       const customUserId = await getCustomUserId(identifier);
-
-      // Get user details using custom user_id
       const user = await getUserDetailsByCustomId(customUserId);
       if (!user) {
         res.status(404).json({ error: "User not found" });
@@ -74,13 +59,11 @@ router.post(
         is_emergency = false,
       } = req.body;
 
-      // Validate items array
       if (!items || !Array.isArray(items) || items.length === 0) {
         res.status(400).json({ error: "At least one item is required" });
         return;
       }
 
-      // Validate each item and check availability
       const validatedItems = [];
       let hasPrescription = false;
       let hasMedicalCert = false;
@@ -90,13 +73,11 @@ router.post(
         const dbItem = await ItemModel.findOne({
           item_id: item.item_id,
         }).session(session);
-
         if (!dbItem) {
           await session.abortTransaction();
           res.status(404).json({ error: `Item ${item.item_id} not found` });
           return;
         }
-
         if (dbItem.getAvailableStock() < item.quantity) {
           await session.abortTransaction();
           res.status(400).json({
@@ -106,7 +87,6 @@ router.post(
           return;
         }
 
-        // Handle prescription upload if any
         let prescriptionUrl = null;
         if (item.prescription_image && dbItem.requires_prescription) {
           try {
@@ -116,15 +96,11 @@ router.post(
               filePath,
               BUCKETS.PRESCRIPTIONS,
             );
-            if (!prescriptionUrl) {
-              console.warn("Prescription upload failed but continuing");
-            }
           } catch (uploadErr) {
             console.error("Failed to upload prescription:", uploadErr);
           }
         }
 
-        // Handle medical certificate upload if any
         let medicalCertUrl = null;
         if (item.medical_certificate && dbItem.requires_med_cert) {
           try {
@@ -134,9 +110,6 @@ router.post(
               filePath,
               BUCKETS.MEDICAL_CERTIFICATES,
             );
-            if (!medicalCertUrl) {
-              console.warn("Medical certificate upload failed but continuing");
-            }
           } catch (uploadErr) {
             console.error("Failed to upload medical certificate:", uploadErr);
           }
@@ -152,23 +125,18 @@ router.post(
           notes: item.notes || null,
         });
 
-        if (dbItem.requires_prescription) {
-          hasPrescription = true;
-        }
-        if (dbItem.requires_med_cert) {
-          hasMedicalCert = true;
-        }
-        if (dbItem.requires_brgy_cert) {
-          hasBarangayCert = true;
-        }
+        if (dbItem.requires_prescription) hasPrescription = true;
+        if (dbItem.requires_med_cert) hasMedicalCert = true;
+        if (dbItem.requires_brgy_cert) hasBarangayCert = true;
       }
 
-      // Create request using custom user_id
+      const requesterName =
+        `${user.last_name || ""}${user.last_name && user.first_name ? ", " : ""}${user.first_name || ""}`.trim() ||
+        "Unknown";
+
       const request = new RequestModel({
-        requester_id: customUserId, // Always use custom user_id
-        requester_name:
-          `${user.last_name || ""}${user.last_name && user.first_name ? ", " : ""}${user.first_name || ""}`.trim() ||
-          "Unknown",
+        requester_id: customUserId,
+        requester_name: requesterName,
         requester_barangay: user.address?.barangay || "Unknown",
         requester_contact: user.contact_number || "",
         items: validatedItems,
@@ -179,12 +147,11 @@ router.post(
         has_medical_cert: hasMedicalCert,
         has_barangay_cert: hasBarangayCert,
         status: "Pending",
-        created_by: customUserId, // Always use custom user_id
+        created_by: customUserId,
       });
 
       await request.save({ session });
 
-      // Update pending_requests count for items
       for (const item of validatedItems) {
         await ItemModel.updateOne(
           { item_id: item.item_id },
@@ -194,15 +161,45 @@ router.post(
 
       await session.commitTransaction();
 
+      // 🔔 Notify admins
+      const itemSummary = validatedItems
+        .map((i) => `${i.item_name} (x${i.quantity})`)
+        .join(", ");
+      const displayName =
+        [user.first_name, user.last_name].filter(Boolean).join(" ") ||
+        customUserId;
+
+      await notifyAdmins({
+        triggered_by: customUserId,
+        type: "application_submitted",
+        title: `New Item Request${is_emergency ? " 🚨 EMERGENCY" : ""}`,
+        message: `${displayName} has submitted a request for: ${itemSummary}.`,
+        priority: is_emergency
+          ? "urgent"
+          : priority === "High"
+            ? "high"
+            : "normal",
+        action_url: `/dashboard/requests/${(request as any).request_id}`,
+        action_text: "View Request",
+        data: {
+          request_id: (request as any).request_id,
+          requester_name: displayName,
+          requester_user_id: customUserId,
+          items: itemSummary,
+          is_emergency,
+          priority,
+        },
+      });
+
       res.status(201).json({
         success: true,
         message: "Request submitted successfully",
         request: {
-          request_id: request.request_id,
-          status: request.status,
-          queue_number: request.queue_number,
-          estimated_wait_time: request.estimated_wait_time,
-          created_at: request.created_at,
+          request_id: (request as any).request_id,
+          status: (request as any).status,
+          queue_number: (request as any).queue_number,
+          estimated_wait_time: (request as any).estimated_wait_time,
+          created_at: (request as any).created_at,
         },
       });
     } catch (err: any) {
@@ -217,7 +214,7 @@ router.post(
   },
 );
 
-// GET /api/requests/me - Get current user's requests
+// ── GET /api/requests/me ──────────────────────────────────────────────────────
 router.get(
   "/me",
   requireAuth,
@@ -228,15 +225,10 @@ router.get(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
-      // Always get the custom user_id
       const customUserId = await getCustomUserId(identifier);
-
-      // Find requests using custom user_id
       const requests = await RequestModel.find({ requester_id: customUserId })
         .sort({ created_at: -1 })
         .lean();
-
       res.json({
         success: true,
         requests: requests || [],
@@ -251,27 +243,22 @@ router.get(
   },
 );
 
-// GET /api/requests/queue - Get queue information
+// ── GET /api/requests/queue ───────────────────────────────────────────────────
 router.get(
   "/queue",
   requireAuth,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const stats = await (RequestModel as any).getQueueStatistics();
-
-      // Get user's position in queue if they have a pending request
       const identifier = req.userId;
       let userRequest = null;
-
       if (identifier) {
         const customUserId = await getCustomUserId(identifier);
-
         userRequest = await RequestModel.findOne({
           requester_id: customUserId,
           status: { $in: ["In Queue", "Processing"] },
         }).lean();
       }
-
       res.json({
         success: true,
         statistics: stats || {
@@ -299,7 +286,7 @@ router.get(
   },
 );
 
-// GET /api/requests/:id - Get single request
+// ── GET /api/requests/:id ─────────────────────────────────────────────────────
 router.get(
   "/:id",
   requireAuth,
@@ -307,14 +294,11 @@ router.get(
     try {
       const { id } = req.params;
       const identifier = req.userId;
-
       if (!identifier) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-
       const customUserId = await getCustomUserId(identifier);
-
       const request = await RequestModel.findOne({
         $or: [{ _id: id }, { request_id: id }],
       }).lean();
@@ -324,20 +308,15 @@ router.get(
         return;
       }
 
-      // Get user to check if admin
       const user = await getUserDetailsByCustomId(customUserId);
       const isAdmin = user?.role === "MSWD-CSWDO-PDAO";
 
-      // Check if user owns this request (using custom user_id)
       if (!isAdmin && (request as any).requester_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
 
-      res.json({
-        success: true,
-        request,
-      });
+      res.json({ success: true, request });
     } catch (err: any) {
       console.error("[GET /api/requests/:id] Error:", err);
       res
@@ -347,7 +326,9 @@ router.get(
   },
 );
 
-// PATCH /api/requests/:id/cancel - Cancel a request
+// ── PATCH /api/requests/:id/cancel
+// 🔔 Notifies admins on success
+// ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id/cancel",
   requireAuth,
@@ -356,14 +337,12 @@ router.patch(
       const { id } = req.params;
       const { reason } = req.body;
       const identifier = req.userId;
-
       if (!identifier) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
 
       const customUserId = await getCustomUserId(identifier);
-
       const request = await RequestModel.findOne({
         $or: [{ _id: id }, { request_id: id }],
       });
@@ -372,14 +351,10 @@ router.patch(
         res.status(404).json({ error: "Request not found" });
         return;
       }
-
-      // Check if user owns this request (using custom user_id)
       if ((request as any).requester_id !== customUserId) {
         res.status(403).json({ error: "Access denied" });
         return;
       }
-
-      // Check if request can be cancelled
       if (!["Pending", "In Queue"].includes((request as any).status)) {
         res.status(400).json({
           error: "Cannot cancel request",
@@ -389,6 +364,27 @@ router.patch(
       }
 
       await (request as any).cancel(customUserId, reason);
+
+      // 🔔 Notify admins
+      const user = await getUserDetailsByCustomId(customUserId);
+      const displayName =
+        [user?.first_name, user?.last_name].filter(Boolean).join(" ") ||
+        customUserId;
+
+      await notifyAdmins({
+        triggered_by: customUserId,
+        type: "custom_message",
+        title: "Item Request Cancelled",
+        message: `${displayName} has cancelled their item request (${(request as any).request_id}).`,
+        action_url: `/dashboard/requests/${(request as any).request_id}`,
+        action_text: "View Request",
+        data: {
+          request_id: (request as any).request_id,
+          requester_name: displayName,
+          requester_user_id: customUserId,
+          reason: reason || null,
+        },
+      });
 
       res.json({
         success: true,

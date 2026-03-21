@@ -5,6 +5,7 @@ import { AuthRequest, requireAuth } from "../middleware/auth";
 import Application from "../models/Application";
 import Card from "../models/Cards";
 import User from "../models/User";
+import { notifyAdmins } from "../utils/notificationHelper";
 import {
   uploadBase64ToSupabase,
   uploadBufferToSupabase,
@@ -45,11 +46,7 @@ const mapSex = (sex: string | undefined): string => {
 };
 
 // ── POST /api/cards/request-from-application ──────────────────────────────────
-// Called from application.tsx after a user's application is Approved.
-// Pulls personal data from the approved application, uploads the 1x1 photo,
-// and creates a Card record pending admin review.
-// card_id is intentionally left null — the admin will assign the real
-// PWD ID number (format: 00-0000-000-0000000) after review.
+// 🔔 Notifies admins on success
 router.post(
   "/request-from-application",
   requireAuth,
@@ -72,7 +69,6 @@ router.post(
         face_verification_distance,
       } = req.body;
 
-      // ── Validate required fields ────────────────────────────────────────────
       if (!blood_type) {
         res.status(400).json({ error: "Blood type is required" });
         return;
@@ -96,7 +92,6 @@ router.post(
         return;
       }
 
-      // ── Find the user's approved application ───────────────────────────────
       const application = await Application.findOne({
         user_id: customUserId,
         status: "Approved",
@@ -116,7 +111,6 @@ router.post(
         application.application_id,
       );
 
-      // ── Check if a card already exists for this user ────────────────────────
       const existingCard = await Card.findOne({ user_id: customUserId });
       if (existingCard) {
         res.status(409).json({
@@ -126,7 +120,6 @@ router.post(
         return;
       }
 
-      // ── Upload 1x1 photo to Supabase ────────────────────────────────────────
       const sanitizedUserId = customUserId.replace(/[^a-zA-Z0-9\-]/g, "_");
       const timestamp = Date.now();
       const photoPath = `${sanitizedUserId}/1x1_photo_${timestamp}.jpg`;
@@ -137,7 +130,6 @@ router.post(
       );
 
       const photoUrl = await uploadBase64ToSupabase(photo_base64, photoPath);
-
       if (!photoUrl) {
         console.error("[cards/request-from-application] photo upload failed");
         res
@@ -148,7 +140,6 @@ router.post(
 
       console.log("[cards/request-from-application] photo uploaded:", photoUrl);
 
-      // ── Build full name from application ────────────────────────────────────
       const nameParts = [
         application.first_name,
         application.middle_name && application.middle_name !== "N/A"
@@ -159,7 +150,6 @@ router.post(
       ].filter(Boolean);
       const fullName = nameParts.join(" ");
 
-      // ── Build address from application residence_address ───────────────────
       const addr = application.residence_address;
       const addressStr = [
         addr?.house_no_and_street,
@@ -171,11 +161,8 @@ router.post(
         .filter(Boolean)
         .join(", ");
 
-      // ── Create the card ─────────────────────────────────────────────────────
-      // card_id is null — admin will assign the real PWD ID number
-      // after reviewing the request. Format: 00-0000-000-0000000
       const card = new Card({
-        card_id: null, // assigned by admin after review
+        card_id: null,
         user_id: customUserId,
         name: fullName,
         barangay: addr?.barangay || "Not detected",
@@ -207,12 +194,23 @@ router.post(
       await card.save();
       console.log("[cards/request-from-application] card saved:", card._id);
 
-      // ── Do NOT set card_id on the user yet — admin hasn't assigned it ───────
-      // User.card_id will be updated by the admin route when issuing the card.
-
-      console.log(
-        "[cards/request-from-application] card request submitted without card_id (pending admin assignment)",
-      );
+      // 🔔 Notify admins
+      await notifyAdmins({
+        triggered_by: customUserId,
+        type: "application_submitted",
+        title: "New PWD Card Request",
+        message: `${fullName} has submitted a PWD ID card request (via approved application ${application.application_id}).`,
+        application_id: application.application_id,
+        action_url: `/dashboard/cards/${card._id}`,
+        action_text: "View Card Request",
+        data: {
+          card_id: card._id,
+          applicant_name: fullName,
+          applicant_user_id: customUserId,
+          application_id: application.application_id,
+          source: "request-from-application",
+        },
+      });
 
       res.status(201).json({
         success: true,
@@ -220,7 +218,7 @@ router.post(
           "Card request submitted successfully. The admin will review and issue your PWD ID card.",
         card: {
           _id: card._id,
-          card_id: card.card_id, // null at this point
+          card_id: card.card_id,
           name: card.name,
           status: card.status,
           blood_type: card.blood_type,
@@ -232,7 +230,6 @@ router.post(
       });
     } catch (err: any) {
       console.error("[POST /api/cards/request-from-application] Error:", err);
-
       if (err.code === 11000) {
         res.status(409).json({
           error: "Card already requested",
@@ -240,7 +237,6 @@ router.post(
         });
         return;
       }
-
       res.status(500).json({
         error: err?.message ?? "Failed to create card request",
         details:
@@ -251,6 +247,7 @@ router.post(
 );
 
 // ── POST /api/cards ───────────────────────────────────────────────────────────
+// 🔔 Notifies admins on success
 router.post(
   "/",
   requireAuth,
@@ -282,11 +279,8 @@ router.post(
         date_issued,
         emergency_contact_name,
         emergency_contact_number,
-        match_score,
-        distance,
       } = req.body;
 
-      // Parse stringified JSON fields from FormData
       let face_descriptors: number[] = [];
       let extracted_data: any = null;
       try {
@@ -354,7 +348,6 @@ router.post(
 
       if (files?.id_front?.[0] && files.id_front[0].size > 0) {
         const f = files.id_front[0];
-        console.log("[cards] Attempting multipart upload for front image...");
         idFrontUrl = await uploadBufferToSupabase(
           f.buffer,
           f.mimetype,
@@ -365,7 +358,6 @@ router.post(
           idFrontUrl || "FAILED",
         );
       } else if (req.body.id_front_base64) {
-        console.log("[cards] Attempting base64 upload for front image...");
         idFrontUrl = await uploadBase64ToSupabase(
           req.body.id_front_base64,
           frontPath,
@@ -385,7 +377,6 @@ router.post(
 
       if (files?.id_back?.[0] && files.id_back[0].size > 0) {
         const f = files.id_back[0];
-        console.log("[cards] Attempting multipart upload for back image...");
         idBackUrl = await uploadBufferToSupabase(
           f.buffer,
           f.mimetype,
@@ -396,7 +387,6 @@ router.post(
           idBackUrl || "FAILED",
         );
       } else if (req.body.id_back_base64) {
-        console.log("[cards] Attempting base64 upload for back image...");
         idBackUrl = await uploadBase64ToSupabase(
           req.body.id_back_base64,
           backPath,
@@ -452,6 +442,23 @@ router.post(
       );
       console.log("=".repeat(50));
 
+      // 🔔 Notify admins
+      await notifyAdmins({
+        triggered_by: customUserId,
+        type: "application_submitted",
+        title: "New PWD Card Submission",
+        message: `${name} has submitted a PWD ID card for verification (Card ID: ${card_id}).`,
+        action_url: `/dashboard/cards/${card._id}`,
+        action_text: "View Card",
+        data: {
+          card_id,
+          card_db_id: card._id,
+          applicant_name: name,
+          applicant_user_id: customUserId,
+          source: "manual-scan",
+        },
+      });
+
       res.status(201).json({
         success: true,
         message: "Card submitted for admin review",
@@ -478,7 +485,6 @@ router.post(
       });
     } catch (err: any) {
       console.error("[POST /api/cards] Error:", err);
-
       if (err.code === 11000) {
         res.status(409).json({
           error: "Card already registered",
@@ -486,7 +492,6 @@ router.post(
         });
         return;
       }
-
       res.status(500).json({
         error: err?.message ?? "Failed to create card",
         details:
@@ -539,7 +544,6 @@ router.post(
         return;
       }
 
-      // Use _id as folder name since card_id may still be null (pending admin assignment)
       const sanitizedId = String(card._id).replace(/[^a-zA-Z0-9\-]/g, "_");
       const sanitizedUserId = customUserId.replace(/[^a-zA-Z0-9\-]/g, "_");
       const photoPath = `${sanitizedUserId}/${sanitizedId}/1x1_photo.jpg`;

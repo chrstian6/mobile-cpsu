@@ -8,38 +8,34 @@ import {
   UpdateCashAssistanceStatusSchema,
 } from "../models/CashAssistance";
 import User from "../models/User";
+import { notifyAdmins } from "../utils/notificationHelper";
 import { BUCKETS, uploadBase64ToSupabase } from "../utils/supabase";
 
 const router = Router();
 
-// ── Helper: format Zod errors into a clean array ──────────────────────────────
 const formatZodErrors = (err: ZodError) =>
   err.issues.map((e) => ({
     field: e.path.join("."),
     message: e.message,
   }));
 
-// ── POST /api/cash-assistance ─────────────────────────────────────────────────
+// ── POST /api/cash-assistance — Submit request
+// 🔔 Notifies admins on success
+// ─────────────────────────────────────────────────────────────────────────────
 router.post("/", requireAuth, async (req: AuthRequest, res: Response) => {
   try {
-    const user_id = req.userId; // Custom user_id (PDAO-...)
+    const user_id = req.userId;
     if (!user_id) {
       return res.status(401).json({ message: "Unauthorized." });
     }
 
-    console.log("[cash-assistance] Creating request for user:", user_id);
-
-    // Verify that the user exists with this custom user_id
     const user = await User.findOne({ user_id });
     if (!user) {
-      console.log("[cash-assistance] User not found with user_id:", user_id);
       return res.status(404).json({ message: "User not found." });
     }
 
-    // ✅ Zod validation - date_needed removed from schema
     const parsed = CreateCashAssistanceSchema.safeParse(req.body);
     if (!parsed.success) {
-      console.log("[cash-assistance] Validation failed:", parsed.error.issues);
       return res.status(400).json({
         message: "Validation failed.",
         errors: formatZodErrors(parsed.error),
@@ -48,7 +44,6 @@ router.post("/", requireAuth, async (req: AuthRequest, res: Response) => {
 
     const { purpose, medical_certificate_base64 } = parsed.data;
 
-    // Upload certificate to dedicated bucket
     let medical_certificate_url: string;
     try {
       const filePath = `${user_id}/${Date.now()}_medical_cert`;
@@ -57,35 +52,40 @@ router.post("/", requireAuth, async (req: AuthRequest, res: Response) => {
         filePath,
         BUCKETS.MEDICAL_CERTIFICATES,
       );
-
-      if (!uploadedUrl) {
+      if (!uploadedUrl)
         throw new Error("Failed to upload certificate - no URL returned");
-      }
-
       medical_certificate_url = uploadedUrl;
-      console.log(
-        "[cash-assistance] Certificate uploaded:",
-        medical_certificate_url,
-      );
     } catch (uploadErr: any) {
-      console.error(
-        "[cash-assistance] Certificate upload failed:",
-        uploadErr.message,
-      );
       return res.status(500).json({
         message: "Failed to upload medical certificate. Please try again.",
       });
     }
 
-    // Store the custom user_id directly as a string
     const record = new CashAssistance({
-      user_id: user_id,
+      user_id,
       purpose: purpose.trim(),
       medical_certificate_url,
     });
-
     await record.save();
-    console.log("[cash-assistance] Saved, form_id:", record.form_id);
+
+    // 🔔 Notify admins
+    const applicantName =
+      [user.first_name, user.last_name].filter(Boolean).join(" ") || user_id;
+
+    await notifyAdmins({
+      triggered_by: user_id,
+      type: "application_submitted",
+      title: "New Cash Assistance Request",
+      message: `${applicantName} has submitted a cash assistance request (${record.form_id}).`,
+      action_url: `/dashboard/cash-assistance/${record._id}`,
+      action_text: "View Request",
+      data: {
+        form_id: record.form_id,
+        applicant_name: applicantName,
+        applicant_user_id: user_id,
+        purpose: record.purpose,
+      },
+    });
 
     return res.status(201).json({
       message: "Cash assistance request submitted.",
@@ -101,7 +101,6 @@ router.post("/", requireAuth, async (req: AuthRequest, res: Response) => {
     });
   } catch (err: any) {
     console.error("[cash-assistance] POST error:", err.message);
-
     if (err.name === "ValidationError") {
       const fields = Object.keys(err.errors).map((key) => ({
         field: key,
@@ -111,13 +110,11 @@ router.post("/", requireAuth, async (req: AuthRequest, res: Response) => {
         .status(400)
         .json({ message: "Validation failed.", errors: fields });
     }
-
     if (err.code === 11000) {
       return res
         .status(409)
         .json({ message: "Duplicate request. Please try again." });
     }
-
     return res.status(500).json({
       message: "Server error.",
       detail: process.env.NODE_ENV === "development" ? err.message : undefined,
@@ -131,28 +128,21 @@ router.get("/me", requireAuth, async (req: AuthRequest, res: Response) => {
     const user_id = req.userId;
     if (!user_id) return res.status(401).json({ message: "Unauthorized." });
 
-    console.log("[cash-assistance] Fetching requests for user:", user_id);
-
     const records = await CashAssistance.find({ user_id })
       .sort({ created_at: -1 })
       .lean();
 
-    console.log(
-      `[cash-assistance] Found ${records.length} requests for user ${user_id}`,
-    );
-
-    // Return only the fields we want to expose
-    const formattedRecords = records.map((record) => ({
-      _id: record._id,
-      form_id: record.form_id,
-      purpose: record.purpose,
-      medical_certificate_url: record.medical_certificate_url,
-      status: record.status,
-      created_at: record.created_at,
-      updated_at: record.updated_at,
-    }));
-
-    return res.json({ cash_assistance: formattedRecords });
+    return res.json({
+      cash_assistance: records.map((r) => ({
+        _id: r._id,
+        form_id: r.form_id,
+        purpose: r.purpose,
+        medical_certificate_url: r.medical_certificate_url,
+        status: r.status,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      })),
+    });
   } catch (err: any) {
     console.error("[cash-assistance] GET /me error:", err.message);
     return res.status(500).json({ message: "Server error." });
@@ -163,11 +153,7 @@ router.get("/me", requireAuth, async (req: AuthRequest, res: Response) => {
 router.get("/:id", requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const user_id = req.userId;
-
-    // Check if the ID is a valid MongoDB ObjectId
-    const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(req.params.id);
-
-    if (!isValidObjectId) {
+    if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) {
       return res.status(400).json({ message: "Invalid request ID format." });
     }
 
@@ -175,39 +161,35 @@ router.get("/:id", requireAuth, async (req: AuthRequest, res: Response) => {
       _id: req.params.id,
       user_id,
     }).lean();
-
     if (!record) return res.status(404).json({ message: "Not found." });
 
-    // Return only the fields we want to expose
-    const formattedRecord = {
-      _id: record._id,
-      form_id: record.form_id,
-      purpose: record.purpose,
-      medical_certificate_url: record.medical_certificate_url,
-      status: record.status,
-      created_at: record.created_at,
-      updated_at: record.updated_at,
-    };
-
-    return res.json({ cash_assistance: formattedRecord });
+    return res.json({
+      cash_assistance: {
+        _id: record._id,
+        form_id: record.form_id,
+        purpose: record.purpose,
+        medical_certificate_url: record.medical_certificate_url,
+        status: record.status,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+      },
+    });
   } catch (err: any) {
     console.error("[cash-assistance] GET /:id error:", err.message);
     return res.status(500).json({ message: "Server error." });
   }
 });
 
-// ── PATCH /api/cash-assistance/:id/cancel ────────────────────────────────────
+// ── PATCH /api/cash-assistance/:id/cancel
+// 🔔 Notifies admins on success
+// ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id/cancel",
   requireAuth,
   async (req: AuthRequest, res: Response) => {
     try {
       const user_id = req.userId;
-
-      // Check if the ID is a valid MongoDB ObjectId
-      const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(req.params.id);
-
-      if (!isValidObjectId) {
+      if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) {
         return res.status(400).json({ message: "Invalid request ID format." });
       }
 
@@ -215,7 +197,6 @@ router.patch(
         _id: req.params.id,
         user_id,
       });
-
       if (!record) return res.status(404).json({ message: "Not found." });
 
       if (record.status !== "Submitted" && record.status !== "Under Review") {
@@ -226,6 +207,26 @@ router.patch(
 
       record.status = "Cancelled";
       await record.save();
+
+      // 🔔 Notify admins
+      const user = (await User.findOne({ user_id }).lean()) as any;
+      const applicantName =
+        [user?.first_name, user?.last_name].filter(Boolean).join(" ") ||
+        user_id!;
+
+      await notifyAdmins({
+        triggered_by: user_id!,
+        type: "custom_message",
+        title: "Cash Assistance Request Cancelled",
+        message: `${applicantName} has cancelled their cash assistance request (${record.form_id}).`,
+        action_url: `/dashboard/cash-assistance/${record._id}`,
+        action_text: "View Request",
+        data: {
+          form_id: record.form_id,
+          applicant_name: applicantName,
+          applicant_user_id: user_id,
+        },
+      });
 
       return res.json({
         message: "Request cancelled.",
@@ -246,20 +247,16 @@ router.patch(
   },
 );
 
-// ── PATCH /api/cash-assistance/:id/status (admin) ────────────────────────────
+// ── PATCH /api/cash-assistance/:id/status (admin) — no notification ───────────
 router.patch(
   "/:id/status",
   requireAuth,
   async (req: AuthRequest, res: Response) => {
     try {
-      // Check if the ID is a valid MongoDB ObjectId
-      const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(req.params.id);
-
-      if (!isValidObjectId) {
+      if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) {
         return res.status(400).json({ message: "Invalid request ID format." });
       }
 
-      // ✅ Zod validation for status update
       const parsed = UpdateCashAssistanceStatusSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({
@@ -273,7 +270,6 @@ router.patch(
         { status: parsed.data.status },
         { new: true },
       );
-
       if (!record) return res.status(404).json({ message: "Not found." });
 
       return res.json({
@@ -294,5 +290,5 @@ router.patch(
     }
   },
 );
-  
+
 export default router;

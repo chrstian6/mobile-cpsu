@@ -7,12 +7,12 @@ import Application, {
   ApplicationZodSchema,
 } from "../models/Application";
 import User from "../models/User";
+import { notifyAdmins } from "../utils/notificationHelper";
 import { BUCKETS, uploadBase64ToSupabase } from "../utils/supabase";
 
 const router = Router();
 
 // ── User ID helpers ───────────────────────────────────────────────────────────
-
 const getCustomUserId = async (identifier: string): Promise<string> => {
   const isValidObjectId = mongoose.Types.ObjectId.isValid(identifier);
   if (isValidObjectId) {
@@ -43,7 +43,6 @@ const getMongoIdFromCustomId = async (
 };
 
 // ── Zod error formatter ───────────────────────────────────────────────────────
-
 const formatZodErrors = (issues: any[]) =>
   issues.reduce((acc: Record<string, string>, issue: any) => {
     const key = issue.path?.join(".") || "general";
@@ -52,9 +51,6 @@ const formatZodErrors = (issues: any[]) =>
   }, {});
 
 // ── Document upload helper ────────────────────────────────────────────────────
-// Accepts base64 strings (same pattern as cash-assistance).
-// Returns the uploaded URL or throws.
-
 interface UploadedDoc {
   medical_certificate_url?: string;
   birth_certificate_url?: string;
@@ -66,12 +62,11 @@ async function uploadApplicationDocs(
   body: {
     medical_certificate_base64?: string;
     birth_certificate_base64?: string;
-    supporting_docs_base64?: string[]; // array of base64 strings
+    supporting_docs_base64?: string[];
   },
 ): Promise<UploadedDoc> {
   const result: UploadedDoc = {};
 
-  // Medical certificate
   if (body.medical_certificate_base64) {
     const path = `${userId}/${Date.now()}_medical_cert`;
     const url = await uploadBase64ToSupabase(
@@ -81,23 +76,19 @@ async function uploadApplicationDocs(
     );
     if (!url) throw new Error("Failed to upload medical certificate.");
     result.medical_certificate_url = url;
-    console.log(`[applications] Medical cert uploaded: ${url}`);
   }
 
-  // Birth certificate
   if (body.birth_certificate_base64) {
     const path = `${userId}/${Date.now()}_birth_cert`;
     const url = await uploadBase64ToSupabase(
       body.birth_certificate_base64,
       path,
-      BUCKETS.SUPPORTING_DOCUMENTS, // reuse supporting docs bucket or add BIRTH_CERTIFICATES bucket
+      BUCKETS.SUPPORTING_DOCUMENTS,
     );
     if (!url) throw new Error("Failed to upload birth certificate.");
     result.birth_certificate_url = url;
-    console.log(`[applications] Birth cert uploaded: ${url}`);
   }
 
-  // Supporting documents (array)
   if (body.supporting_docs_base64?.length) {
     const urls: string[] = [];
     for (let i = 0; i < body.supporting_docs_base64.length; i++) {
@@ -112,21 +103,14 @@ async function uploadApplicationDocs(
       urls.push(url);
     }
     result.supporting_docs_urls = urls;
-    console.log(
-      `[applications] Supporting docs uploaded: ${urls.length} file(s)`,
-    );
   }
 
   return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/applications
-// Submit a new application (status: Submitted)
-// Body may include:
-//   medical_certificate_base64  — base64 string
-//   birth_certificate_base64    — base64 string
-//   supporting_docs_base64      — string[]
+// POST /api/applications — Submit a new application
+// 🔔 Notifies admins on success
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   "/",
@@ -143,7 +127,6 @@ router.post(
       const mongoId =
         (await getMongoIdFromCustomId(customUserId)) || identifier;
 
-      // Duplicate check
       const existing = await Application.findOne({
         user_id: customUserId,
         status: { $in: ["Draft", "Submitted", "Under Review"] },
@@ -157,7 +140,6 @@ router.post(
         return;
       }
 
-      // Upload documents first (fail fast before DB write)
       let uploadedDocs: UploadedDoc = {};
       try {
         uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
@@ -168,14 +150,12 @@ router.post(
         return;
       }
 
-      // Validate with Zod
       const parsed = ApplicationZodSchema.safeParse({
         ...req.body,
         user_id: customUserId,
         status: "Submitted",
         date_applied: new Date(),
-        ...uploadedDocs, // merge uploaded URLs into validated payload
-        // Merge supporting_docs_urls arrays (existing + newly uploaded)
+        ...uploadedDocs,
         supporting_docs_urls: [
           ...(req.body.supporting_docs_urls ?? []),
           ...(uploadedDocs.supporting_docs_urls ?? []),
@@ -204,6 +184,28 @@ router.post(
       console.log(
         `✅ Application submitted: ${application.application_id} | user: ${customUserId}`,
       );
+
+      // 🔔 Notify admins
+      const userDetails = await getUserDetailsByCustomId(customUserId);
+      const applicantName =
+        [userDetails?.first_name, userDetails?.last_name]
+          .filter(Boolean)
+          .join(" ") || customUserId;
+
+      await notifyAdmins({
+        triggered_by: customUserId,
+        type: "application_submitted",
+        title: "New Application Submitted",
+        message: `${applicantName} has submitted a new PWD application (${application.application_id}).`,
+        application_id: application.application_id,
+        action_url: `/dashboard/applications/${application.application_id}`,
+        action_text: "View Application",
+        data: {
+          application_id: application.application_id,
+          applicant_name: applicantName,
+          applicant_user_id: customUserId,
+        },
+      });
 
       res.status(201).json({
         success: true,
@@ -240,8 +242,7 @@ router.post(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/applications/draft
-// Save a draft — same file upload support
+// POST /api/applications/draft — Save a draft (no notification)
 // ─────────────────────────────────────────────────────────────────────────────
 router.post(
   "/draft",
@@ -258,7 +259,6 @@ router.post(
       const mongoId =
         (await getMongoIdFromCustomId(customUserId)) || identifier;
 
-      // Upload any provided documents
       let uploadedDocs: UploadedDoc = {};
       try {
         uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
@@ -279,11 +279,11 @@ router.post(
         ],
       };
 
-      // Update existing draft if present
       const existingDraft = await Application.findOne({
         user_id: customUserId,
         status: "Draft",
       });
+
       if (existingDraft) {
         const parsed = ApplicationUpdateSchema.safeParse(bodyWithDocs);
         if (!parsed.success) {
@@ -314,7 +314,6 @@ router.post(
         return;
       }
 
-      // New draft
       const parsed = ApplicationUpdateSchema.safeParse({
         ...bodyWithDocs,
         status: "Draft",
@@ -332,6 +331,7 @@ router.post(
         created_by: customUserId,
       });
       await application.save();
+
       await User.findByIdAndUpdate(mongoId, {
         form_id: application.application_id,
         updated_by: customUserId,
@@ -429,7 +429,6 @@ router.get(
         return;
       }
       const customUserId = await getCustomUserId(identifier);
-
       const application = await Application.findOne({
         $or: [
           { _id: mongoose.Types.ObjectId.isValid(id) ? id : null },
@@ -445,6 +444,7 @@ router.get(
       const user = await getUserDetailsByCustomId(customUserId);
       const isOwner = application.user_id === customUserId;
       const isStaff = ["Admin", "Supervisor", "Staff"].includes(user?.role);
+
       if (!isOwner && !isStaff) {
         res.status(403).json({ error: "Access denied" });
         return;
@@ -461,8 +461,7 @@ router.get(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /api/applications/:id
-// Update a Draft — including document uploads
+// PATCH /api/applications/:id — Update a Draft (no notification)
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id",
@@ -475,7 +474,6 @@ router.patch(
         return;
       }
       const customUserId = await getCustomUserId(identifier);
-
       const application = await Application.findOne({
         $or: [
           {
@@ -486,6 +484,7 @@ router.patch(
           { application_id: req.params.id },
         ],
       });
+
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
@@ -502,7 +501,6 @@ router.patch(
         return;
       }
 
-      // Upload any new documents
       let uploadedDocs: UploadedDoc = {};
       try {
         uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
@@ -517,13 +515,13 @@ router.patch(
         ...req.body,
         user_id: customUserId,
         ...uploadedDocs,
-        // Append newly uploaded supporting docs to existing ones
         supporting_docs_urls: [
           ...((application as any).supporting_docs_urls ?? []),
           ...(req.body.supporting_docs_urls ?? []),
           ...(uploadedDocs.supporting_docs_urls ?? []),
         ],
       });
+
       if (!parsed.success) {
         res.status(400).json({
           error: "Validation failed",
@@ -558,8 +556,8 @@ router.patch(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /api/applications/:id/submit
-// Submit a Draft → Submitted (full validation)
+// PATCH /api/applications/:id/submit — Submit a Draft
+// 🔔 Notifies admins on success
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id/submit",
@@ -572,7 +570,6 @@ router.patch(
         return;
       }
       const customUserId = await getCustomUserId(identifier);
-
       const application = await Application.findOne({
         $or: [
           {
@@ -583,6 +580,7 @@ router.patch(
           { application_id: req.params.id },
         ],
       });
+
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
@@ -599,7 +597,6 @@ router.patch(
         return;
       }
 
-      // Upload any documents sent with submit request
       let uploadedDocs: UploadedDoc = {};
       try {
         uploadedDocs = await uploadApplicationDocs(customUserId, req.body);
@@ -620,6 +617,7 @@ router.patch(
           ...(uploadedDocs.supporting_docs_urls ?? []),
         ],
       });
+
       if (!parsed.success) {
         res.status(400).json({
           error: "Application is incomplete",
@@ -637,6 +635,28 @@ router.patch(
         updated_by: customUserId,
       });
       await application.save();
+
+      // 🔔 Notify admins
+      const userDetails = await getUserDetailsByCustomId(customUserId);
+      const applicantName =
+        [userDetails?.first_name, userDetails?.last_name]
+          .filter(Boolean)
+          .join(" ") || customUserId;
+
+      await notifyAdmins({
+        triggered_by: customUserId,
+        type: "application_submitted",
+        title: "New Application Submitted",
+        message: `${applicantName} has submitted a new PWD application (${application.application_id}).`,
+        application_id: application.application_id,
+        action_url: `/dashboard/applications/${application.application_id}`,
+        action_text: "View Application",
+        data: {
+          application_id: application.application_id,
+          applicant_name: applicantName,
+          applicant_user_id: customUserId,
+        },
+      });
 
       res.json({
         success: true,
@@ -662,6 +682,7 @@ router.patch(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/applications/:id/cancel
+// 🔔 Notifies admins on success
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch(
   "/:id/cancel",
@@ -674,7 +695,6 @@ router.patch(
         return;
       }
       const customUserId = await getCustomUserId(identifier);
-
       const application = await Application.findOne({
         $or: [
           {
@@ -685,6 +705,7 @@ router.patch(
           { application_id: req.params.id },
         ],
       });
+
       if (!application) {
         res.status(404).json({ error: "Application not found" });
         return;
@@ -704,6 +725,28 @@ router.patch(
       application.status = "Cancelled";
       (application as any).updated_by = customUserId;
       await application.save();
+
+      // 🔔 Notify admins
+      const userDetails = await getUserDetailsByCustomId(customUserId);
+      const applicantName =
+        [userDetails?.first_name, userDetails?.last_name]
+          .filter(Boolean)
+          .join(" ") || customUserId;
+
+      await notifyAdmins({
+        triggered_by: customUserId,
+        type: "custom_message",
+        title: "Application Cancelled",
+        message: `${applicantName} has cancelled their PWD application (${application.application_id}).`,
+        application_id: application.application_id,
+        action_url: `/dashboard/applications/${application.application_id}`,
+        action_text: "View Application",
+        data: {
+          application_id: application.application_id,
+          applicant_name: applicantName,
+          applicant_user_id: customUserId,
+        },
+      });
 
       res.json({
         success: true,
