@@ -15,7 +15,12 @@ export type NotificationType =
 
 export type NotificationStatus = "unread" | "read" | "archived";
 export type NotificationPriority = "low" | "normal" | "high" | "urgent";
-export type UserRole = "Admin" | "Staff" | "User" | "Supervisor";
+export type UserRole =
+  | "Admin"
+  | "Staff"
+  | "User"
+  | "Supervisor"
+  | "MSWD-CSWDO-PDAO";
 
 // ============ INTERFACE ============
 export interface INotification {
@@ -48,13 +53,6 @@ export interface INotificationDocument extends INotification, Document {
   markAsArchived(): Promise<INotificationDocument>;
 }
 
-// ============ ID GENERATOR ============
-const generateNotificationId = (): string => {
-  const dateStr = new Date().toISOString().split("T")[0].replace(/-/g, "");
-  const random = Math.random().toString(36).substring(2, 7).toUpperCase();
-  return `NOTIF-${dateStr}-${random}`;
-};
-
 // ============ MONGOOSE SCHEMA ============
 const NotificationSchema = new Schema<INotificationDocument>(
   {
@@ -62,7 +60,12 @@ const NotificationSchema = new Schema<INotificationDocument>(
       type: String,
       required: true,
       unique: true,
-      default: generateNotificationId,
+      default: function (): string {
+        const date = new Date();
+        const dateStr = date.toISOString().split("T")[0].replace(/-/g, "");
+        const random = Math.random().toString(36).substring(2, 7).toUpperCase();
+        return `NOTIF-${dateStr}-${random}`;
+      },
     },
     user_id: {
       type: String,
@@ -124,7 +127,7 @@ const NotificationSchema = new Schema<INotificationDocument>(
     created_by: { type: String },
     target_roles: {
       type: [String],
-      enum: ["Admin", "Staff", "User", "Supervisor"],
+      enum: ["Admin", "Staff", "User", "Supervisor", "MSWD-CSWDO-PDAO"],
       default: undefined,
     },
     is_public: {
@@ -190,7 +193,7 @@ export const NotificationZodSchema = z.object({
   email_sent: z.boolean().default(false),
   created_by: z.string().optional(),
   target_roles: z
-    .array(z.enum(["Admin", "Staff", "User", "Supervisor"]))
+    .array(z.enum(["Admin", "Staff", "User", "Supervisor", "MSWD-CSWDO-PDAO"]))
     .optional(),
   is_public: z.boolean().default(false),
 });
@@ -202,6 +205,19 @@ export type Notification = z.infer<typeof NotificationZodSchema>;
 export type NotificationUpdate = z.infer<typeof NotificationUpdateZodSchema>;
 
 // ============ HELPER FUNCTIONS ============
+
+// Builds the visibility query:
+//   - direct notifications  → user_id matches
+//   - role-targeted notifications → target_roles includes the user's role
+const buildQuery = (
+  user_id: string,
+  user_role?: string,
+  extra?: Record<string, any>,
+): Record<string, any> => {
+  const conditions: any[] = [{ user_id }];
+  if (user_role) conditions.push({ target_roles: user_role });
+  return { $or: conditions, ...extra };
+};
 
 export async function createNotification(data: {
   user_id: string;
@@ -241,11 +257,9 @@ export async function createNotification(data: {
 
 export async function getUnreadCount(user_id: string, user_role?: string) {
   try {
-    const query: Record<string, any> = { user_id, status: "unread" };
-    if (user_role === "Staff") {
-      query["$or"] = [{ is_public: true }, { target_roles: "Staff" }];
-    }
-    const count = await NotificationModel.countDocuments(query);
+    const count = await NotificationModel.countDocuments(
+      buildQuery(user_id, user_role, { status: "unread" }),
+    );
     return { success: true, count };
   } catch (error) {
     console.error("Error getting unread count:", error);
@@ -259,13 +273,10 @@ export async function getUnreadCount(user_id: string, user_role?: string) {
 
 export async function markAllAsRead(user_id: string, user_role?: string) {
   try {
-    const query: Record<string, any> = { user_id, status: "unread" };
-    if (user_role === "Staff") {
-      query["$or"] = [{ is_public: true }, { target_roles: "Staff" }];
-    }
-    await NotificationModel.updateMany(query, {
-      $set: { status: "read", read_at: new Date() },
-    });
+    await NotificationModel.updateMany(
+      buildQuery(user_id, user_role, { status: "unread" }),
+      { $set: { status: "read", read_at: new Date() } },
+    );
     return { success: true };
   } catch (error) {
     console.error("Error marking all as read:", error);
@@ -284,17 +295,12 @@ export async function getUserNotifications(
   status?: NotificationStatus,
 ) {
   try {
-    const query: Record<string, any> = { user_id };
-    if (user_role === "Staff") {
-      query["$or"] = [{ is_public: true }, { target_roles: "Staff" }];
-    }
-    if (status) query.status = status;
-
-    const notifications = await NotificationModel.find(query)
+    const notifications = await NotificationModel.find(
+      buildQuery(user_id, user_role, status ? { status } : undefined),
+    )
       .sort({ created_at: -1 })
       .limit(limit)
       .lean();
-
     return {
       success: true,
       data: JSON.parse(JSON.stringify(notifications)),
@@ -313,11 +319,7 @@ export async function getUserNotifications(
 
 export async function markAsRead(notification_id: string, user_role?: string) {
   try {
-    const query: Record<string, any> = { notification_id };
-    if (user_role === "Staff") {
-      query["$or"] = [{ is_public: true }, { target_roles: "Staff" }];
-    }
-    const notification = await NotificationModel.findOne(query);
+    const notification = await NotificationModel.findOne({ notification_id });
     if (!notification) {
       return { success: false, error: "Notification not found" };
     }
@@ -342,11 +344,7 @@ export async function deleteNotification(
   user_role?: string,
 ) {
   try {
-    const query: Record<string, any> = { notification_id };
-    if (user_role === "Staff") {
-      query["$or"] = [{ is_public: true }, { target_roles: "Staff" }];
-    }
-    const result = await NotificationModel.deleteOne(query);
+    const result = await NotificationModel.deleteOne({ notification_id });
     if (result.deletedCount === 0) {
       return { success: false, error: "Notification not found" };
     }
@@ -361,4 +359,16 @@ export async function deleteNotification(
           : "Failed to delete notification",
     };
   }
+}
+
+export async function getMSWDCSSWDOPDAONotifications(
+  user_id: string,
+  limit: number = 50,
+  status?: NotificationStatus,
+) {
+  return getUserNotifications(user_id, "MSWD-CSWDO-PDAO", limit, status);
+}
+
+export async function getMSWDCSSWDOPDAOUnreadCount(user_id: string) {
+  return getUnreadCount(user_id, "MSWD-CSWDO-PDAO");
 }

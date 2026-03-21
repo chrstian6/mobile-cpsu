@@ -16,6 +16,7 @@ import {
   CreditCard,
   FileText,
   Heart,
+  Lock,
   MapPin,
   Package,
   PhilippinePeso,
@@ -24,6 +25,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   FlatList,
   Image,
@@ -1014,42 +1016,76 @@ export default function HomeScreen() {
           </View>
           {renderEventsSection()}
         </View>
-
         {/* ── Services ───────────────────────────────────────────────────── */}
         <View className="px-6 mt-8">
           <Text className="text-gray-900 text-[16px] font-bold tracking-tight mb-3">
             Services
           </Text>
           <View className="flex-row gap-3">
-            {services.map((s) => (
-              <Pressable
-                key={s.id}
-                className="flex-1 bg-gray-50 rounded-2xl p-5 border border-gray-100 active:bg-gray-100"
-                onPress={
-                  s.route ? () => router.push(s.route as any) : undefined
-                }
-              >
-                <View className="self-start bg-white border border-gray-200 rounded-lg px-2.5 py-1 mb-4">
-                  <Text className="text-gray-500 text-[10px] font-medium tracking-wide">
-                    {s.tag}
-                  </Text>
-                </View>
-                <Text className="text-gray-900 text-[15px] font-bold leading-tight mb-1.5">
-                  {s.title}
-                </Text>
-                <Text className="text-gray-400 text-[11px] leading-[15px]">
-                  {s.description}
-                </Text>
-                {s.route && (
-                  <View className="flex-row items-center mt-3 gap-1">
-                    <Text className="text-green-700 text-[11px] font-semibold">
-                      {s.id === 2 ? "Request Now" : "Apply Now"}
+            {services.map((s) => {
+              const isLocked = !user.is_verified;
+              return (
+                <Pressable
+                  key={s.id}
+                  className={`flex-1 rounded-2xl p-5 border active:opacity-80 ${
+                    isLocked
+                      ? "bg-gray-100 border-gray-200 opacity-60"
+                      : "bg-gray-50 border-gray-100 active:bg-gray-100"
+                  }`}
+                  onPress={() => {
+                    if (isLocked) {
+                      Alert.alert(
+                        "Verification Required",
+                        "You need a verified PWD ID before accessing this service.",
+                        [{ text: "OK" }],
+                      );
+                      return;
+                    }
+                    if (s.route) router.push(s.route as any);
+                  }}
+                >
+                  {/* Lock badge */}
+                  {isLocked && (
+                    <View className="absolute top-3 right-3 bg-gray-300 rounded-full p-1">
+                      <Lock size={10} color="#6B7280" strokeWidth={2.5} />
+                    </View>
+                  )}
+
+                  <View className="self-start bg-white border border-gray-200 rounded-lg px-2.5 py-1 mb-4">
+                    <Text className="text-gray-500 text-[10px] font-medium tracking-wide">
+                      {s.tag}
                     </Text>
-                    <ChevronRight size={11} color="#15803d" strokeWidth={2.5} />
                   </View>
-                )}
-              </Pressable>
-            ))}
+                  <Text
+                    className={`text-[15px] font-bold leading-tight mb-1.5 ${isLocked ? "text-gray-400" : "text-gray-900"}`}
+                  >
+                    {s.title}
+                  </Text>
+                  <Text className="text-gray-400 text-[11px] leading-[15px]">
+                    {s.description}
+                  </Text>
+                  {s.route && !isLocked && (
+                    <View className="flex-row items-center mt-3 gap-1">
+                      <Text className="text-green-700 text-[11px] font-semibold">
+                        {s.id === 2 ? "Request Now" : "Apply Now"}
+                      </Text>
+                      <ChevronRight
+                        size={11}
+                        color="#15803d"
+                        strokeWidth={2.5}
+                      />
+                    </View>
+                  )}
+                  {isLocked && (
+                    <View className="flex-row items-center mt-3 gap-1">
+                      <Text className="text-gray-400 text-[11px] font-medium">
+                        Verified users only
+                      </Text>
+                    </View>
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 
